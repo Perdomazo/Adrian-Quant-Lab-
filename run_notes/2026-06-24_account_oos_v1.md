@@ -191,3 +191,119 @@ Resultado:
 - parity test
 - paper monitor
 - promocion automatica
+
+## Despliegue remoto del 2026-06-24
+
+Paquete desplegado:
+
+- `/tmp/adrian_quant_account_oos.tgz`
+- SHA256:
+  - `ccec2e8f47cf49b4066865d876ef13b9f668ed2419890595fe978d3c7ee9cf49`
+- Commit registrado en homeserver:
+  - `4735466cfea78a85b6e278d9f2d732ff49002405`
+- Backup remoto:
+  - `/tmp/adrian_quant_backup_20260624T225327Z`
+
+Validaciones remotas:
+
+- Compilacion Python:
+  - OK
+- Bash `-n`:
+  - OK
+- Tests remotos:
+  - `37 passed`
+
+Ingest manual remoto:
+
+- `run_id`: `ingest-20260624T225556Z-nogit-9d265b`
+- `status`: `success`
+- `data_quality_status`: `passed`
+- `files_checked`: `10`
+- `stale_pairs`: `[]`
+- `incomplete_pairs`: `[]`
+- `max_lag_bars`: `0`
+
+Research manual remoto:
+
+- Primer intento por SSH directo:
+  - `run_id`: `20260624T225658Z-nogit-a31af4`
+  - `status`: `failed`
+  - `error`: `pipeline_failed_exit_120`
+  - Causa probable: corte de conexion SSH durante la etapa posterior a `account_validation`.
+  - `data_quality_status`: `passed`
+  - `account_validation_status`: `passed`
+  - `account_oos_validation.json`: faltante en ese intento.
+- Segundo intento con `nohup`:
+  - `run_id`: `20260624T232201Z-nogit-fe3f19`
+  - `status`: `success`
+  - `data_quality_status`: `passed`
+  - `account_validation_status`: `passed`
+  - `account_oos_validation_status`: `passed`
+  - `total_seconds`: `1125`
+  - `features_seconds`: `33`
+  - `edge_engine_seconds`: `49`
+  - `walk_forward_seconds`: `8`
+  - `account_simulator_seconds`: `579`
+  - `account_oos_seconds`: `441`
+  - `account_oos_validation_seconds`: `2`
+
+Account validation remoto:
+
+- `negative_cash_rows`: `0`
+- `equity_identity_failures`: `0`
+- `exposure_violations`: `0`
+- `position_limit_violations`: `0`
+- `duplicate_trade_ids`: `0`
+- `nonfinite_rows`: `0`
+- `trades_checked`: `7824`
+- `equity_rows_checked`: `144832`
+
+Account OOS validation remoto:
+
+- `status`: `passed`
+- `folds_checked`: `24`
+- `trades_outside_test`: `0`
+- `duplicate_folds`: `0`
+- `duplicate_equity_rows`: `0`
+- `aggregate_mismatches`: `0`
+- `missing_artifacts`: `[]`
+- `trade_rows`: `3476`
+- `equity_rows`: `65520`
+- `rejection_rows`: `22004`
+
+Account OOS agregado remoto:
+
+- `ema_trend_20_50_100 4h`
+  - positive_fold_rate: `0.666667`
+  - median_oos_return: `0.042043`
+  - median_oos_profit_factor: `1.131329`
+  - worst_oos_drawdown: `-0.081143`
+  - total_oos_trades: `288`
+- `volatility_expansion_20 4h`
+  - positive_fold_rate: `0.666667`
+  - median_oos_return: `0.017438`
+  - median_oos_profit_factor: `1.174805`
+  - worst_oos_drawdown: `-0.054096`
+  - total_oos_trades: `118`
+
+Estado final de servicios:
+
+- `adrian-quant-lab.service`: `active`
+- `adrian-quant-ingest.timer`: `active`, `enabled`
+- `adrian-quant-research.timer`: `active`, `enabled`
+- `adrian-quant-deep.timer`: `inactive`, `disabled`
+- `adrian-quant-pipeline.timer`: `inactive`, `disabled`
+- `adrian-quant-promotion.timer`: `inactive`, `disabled`
+- Dashboard:
+  - `HTTP/1.1 200 OK`
+- Paper containers:
+  - ninguno encontrado con `freqtrade-paper-promoted`.
+
+Proximos pasos:
+
+- Observar la primera corrida automatica de ingest.
+- No activar deep hasta validarlo manualmente.
+- No activar promocion.
+- Siguiente sprint recomendado:
+  - `account_candidate`
+  - despues de revisar distribucion de folds OOS y trades por fold.
