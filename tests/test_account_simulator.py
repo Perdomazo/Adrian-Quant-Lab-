@@ -4,7 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from research_lab.account_simulator import AccountConfig, simulate_account
+from research_lab.account_simulator import (
+    ALLOCATION_CAPACITY_BUFFER,
+    AccountConfig,
+    simulate_account,
+)
 
 
 def cfg(**overrides) -> AccountConfig:
@@ -235,7 +239,7 @@ def test_three_simultaneous_signals_allocate_pro_rata():
     _, equity, summary, rejections = run_sim(data, signals, config)
 
     first_invested = 1000.0 - equity.iloc[1]["cash"]
-    assert first_invested == pytest.approx(300.0)
+    assert first_invested == pytest.approx(300.0 * ALLOCATION_CAPACITY_BUFFER)
     assert summary.iloc[0]["max_concurrent_positions"] == 3
     assert rejections.empty
 

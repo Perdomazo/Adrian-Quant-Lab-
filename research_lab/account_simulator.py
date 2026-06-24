@@ -16,6 +16,7 @@ from research_lab.warehouse import feature_path, refresh_duckdb, write_parquet_a
 
 ACCOUNT_SIMULATOR_VERSION = "account-sim-v2"
 MAX_FINITE_PROFIT_FACTOR = 999.0
+ALLOCATION_CAPACITY_BUFFER = 0.999
 
 
 @dataclass(frozen=True)
@@ -351,7 +352,7 @@ def stake_capacity(capital: float, allocated: float, limit: float, fee: float) -
     numerator = limit * capital - allocated
     if numerator <= 0:
         return 0.0
-    return numerator / (1.0 + limit * fee)
+    return (numerator / (1.0 + limit * fee)) * ALLOCATION_CAPACITY_BUFFER
 
 
 def record_rejection(
