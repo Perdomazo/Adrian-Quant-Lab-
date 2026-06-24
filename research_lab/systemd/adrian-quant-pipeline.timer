@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Adrian Quant Lab pipeline every night
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+Unit=adrian-quant-pipeline.service
+
+[Install]
+WantedBy=timers.target

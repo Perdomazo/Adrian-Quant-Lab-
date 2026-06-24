@@ -1,0 +1,78 @@
+{
+  "_comment": "KuCoin spot config for QuantScalper_SXD research/backtesting/dry-run. Fill API keys only for dry/live.",
+  "user_data_dir": "user_data",
+  "strategy": "QuantScalper_SXD",
+  "max_open_trades": 2,
+  "stake_currency": "USDT",
+  "stake_amount": "unlimited",
+  "tradable_balance_ratio": 0.95,
+  "fiat_display_currency": "USD",
+  "trading_mode": "spot",
+  "dry_run": true,
+  "dry_run_wallet": 1000,
+  "cancel_open_orders_on_exit": true,
+  "timeframe": "5m",
+  "dataformat_ohlcv": "feather",
+
+  "_costs": "KuCoin spot baseline fee. Stress test with higher fee/cost in quant_validation.py.",
+  "fee": 0.001,
+
+  "unfilledtimeout": {
+    "entry": 5,
+    "exit": 10,
+    "unit": "minutes"
+  },
+
+  "entry_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0.0,
+    "check_depth_of_market": {
+      "enabled": true,
+      "bids_to_ask_delta": 1.0
+    }
+  },
+  "exit_pricing": {
+    "price_side": "other",
+    "use_order_book": true,
+    "order_book_top": 1
+  },
+
+  "exchange": {
+    "name": "kucoin",
+    "key": "",
+    "secret": "",
+    "password": "",
+    "ccxt_config": {
+      "enableRateLimit": true,
+      "rateLimit": 200
+    },
+    "ccxt_async_config": {
+      "enableRateLimit": true,
+      "rateLimit": 200
+    },
+    "pair_whitelist": [
+      "SOL/USDT",
+      "XRP/USDT",
+      "DOGE/USDT"
+    ],
+    "pair_blacklist": [
+      "KCS/USDT"
+    ]
+  },
+
+  "pairlists": [
+    {
+      "method": "StaticPairList"
+    }
+  ],
+
+  "process_throttle_secs": 5,
+  "internals": {
+    "heartbeat_interval": 60
+  },
+  "bot_name": "QuantScalper_SXD",
+  "initial_state": "running",
+  "force_entry_enable": false
+}

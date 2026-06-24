@@ -1,0 +1,12 @@
+[Unit]
+Description=Adrian Quant Lab promotion gate to Freqtrade dry-run paper
+Requires=adrian-quant-pipeline.service
+After=adrian-quant-pipeline.service docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=adrian
+WorkingDirectory=/home/adrian/freqtrade
+Environment=PATH=/home/adrian/freqtrade/.venv-lab/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/bin/bash -lc 'RUN_ID=$(/home/adrian/freqtrade/.venv-lab/bin/python -m research_lab.run_manager --root /home/adrian/freqtrade --storage research_lab/storage latest-id); exec /home/adrian/freqtrade/.venv-lab/bin/python -m research_lab.promotion --root /home/adrian/freqtrade --storage research_lab/storage --rules research_lab/config/promotion_rules.json --run-id "$RUN_ID" --execute'

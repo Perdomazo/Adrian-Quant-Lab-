@@ -1,0 +1,26 @@
+{
+  "version": "lab-rules-v1",
+  "candidate": {
+    "min_trades": 80,
+    "min_profit_factor": 1.15,
+    "min_expectancy": 0.0,
+    "min_max_drawdown": -0.35,
+    "min_score": 60
+  },
+  "watch": {
+    "min_trades": 50,
+    "min_profit_factor": 1.0,
+    "min_expectancy": 0.0,
+    "min_max_drawdown": -0.45
+  },
+  "monte_carlo": {
+    "sims": 300,
+    "seed": 42,
+    "ruin_drawdown": -0.50
+  },
+  "stress": {
+    "extra_costs": [0.0002, 0.0005, 0.001],
+    "maker_offset": 0.001,
+    "maker_timeout_bars": 1
+  }
+}

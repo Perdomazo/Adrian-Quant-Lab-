@@ -1,0 +1,16 @@
+[Unit]
+Description=Adrian Quant Lab Streamlit dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=adrian
+WorkingDirectory=/home/adrian/freqtrade
+Environment=PATH=/home/adrian/freqtrade/.venv-lab/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/adrian/freqtrade/.venv-lab/bin/streamlit run research_lab/dashboard.py --server.address 0.0.0.0 --server.port 8501 --server.headless true --browser.gatherUsageStats false
+Restart=unless-stopped
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

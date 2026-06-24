@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Adrian Quant Lab promotion gate every morning
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+Persistent=true
+Unit=adrian-quant-promotion.service
+
+[Install]
+WantedBy=timers.target

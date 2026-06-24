@@ -1,0 +1,27 @@
+{
+  "version": "promotion-rules-v1",
+  "enabled": true,
+  "dry_run_only": true,
+  "min_observation_days": 14,
+  "min_score": 70,
+  "min_profit_factor": 1.2,
+  "min_positive_fold_rate": 0.6,
+  "min_median_oos_pf": 1.05,
+  "min_median_oos_expectancy": 0.0,
+  "min_worst_oos_drawdown": -0.30,
+  "max_drawdown_floor": -0.30,
+  "min_total_test_trades": 80,
+  "allowed_timeframes": ["4h"],
+  "allowed_edges": [
+    "donchian_20_10",
+    "ema_trend_20_50_100",
+    "volatility_expansion_20"
+  ],
+  "require_parity_test": true,
+  "parity_report": "parity_report.json",
+  "docker_image": "freqtradeorg/freqtrade:stable",
+  "paper_wallet": 1000,
+  "stake_amount": 50,
+  "service_name": "freqtrade-paper-promoted",
+  "strategy_name": "PromotedEdgeStrategy"
+}

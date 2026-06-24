@@ -113,5 +113,11 @@ target/
 !config_examples/config_full.example.json
 !config_examples/config_kraken.example.json
 !config_examples/config_freqai.example.json
+!config.kucoin.example.json
 
 docker-compose-*.yml
+
+# Adrian Quant Lab generated artifacts
+research_lab/storage/
+research_lab/audit_integrity/
+research_lab/audit_integrity.zip
