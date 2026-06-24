@@ -48,6 +48,25 @@ def short_git_commit(root: Path) -> str | None:
         return None
 
 
+def full_git_commit(root: Path) -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return None
+
+
+def text_file_value(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    value = path.read_text(encoding="utf-8").strip()
+    return value or None
+
+
 def command_version(root: Path, command: list[str]) -> str | None:
     try:
         return subprocess.check_output(
@@ -93,6 +112,31 @@ def file_exists_hash(path: Path) -> str | None:
     return sha256_file(path) if path.exists() else None
 
 
+def source_tree_hash(root: Path) -> str | None:
+    source_root = root / "research_lab"
+    if not source_root.exists():
+        return None
+    suffixes = {".py", ".sh", ".json", ".service", ".timer", ".md"}
+    paths = [
+        path
+        for path in source_root.rglob("*")
+        if path.is_file()
+        and path.suffix in suffixes
+        and "storage" not in path.parts
+        and "audit_integrity" not in path.parts
+        and "__pycache__" not in path.parts
+    ]
+    if not paths:
+        return None
+    h = hashlib.sha256()
+    for path in sorted(paths):
+        h.update(str(path.relative_to(root)).encode("utf-8"))
+        file_hash = sha256_file(path)
+        if file_hash:
+            h.update(file_hash.encode("utf-8"))
+    return h.hexdigest()
+
+
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
@@ -131,6 +175,8 @@ def base_manifest(root: Path, storage: Path, run_id: str, status: str) -> dict[s
     promotion_rules = root / "research_lab" / "config" / "promotion_rules.json"
     account_rules = root / "research_lab" / "config" / "account_rules.json"
     pair_universe = root / "research_lab" / "config" / "pair_universe.json"
+    deployed_commit = root / "research_lab" / "DEPLOYED_COMMIT"
+    deployment_hash = root / "research_lab" / "DEPLOYMENT_PACKAGE_SHA256"
     return {
         "run_id": run_id,
         "status": status,
@@ -138,6 +184,9 @@ def base_manifest(root: Path, storage: Path, run_id: str, status: str) -> dict[s
         "started_at": utc_now(),
         "completed_at": None,
         "git_commit": short_git_commit(root),
+        "source_commit": full_git_commit(root) or text_file_value(deployed_commit),
+        "code_hash": source_tree_hash(root),
+        "deployment_package_hash": text_file_value(deployment_hash),
         "python_version": sys.version.split()[0],
         "platform": platform.platform(),
         "freqtrade_version": command_version(root, ["freqtrade", "--version"]),
@@ -198,10 +247,15 @@ def update_run(
     payload["features_hash"] = hash_many([storage / "features_manifest.parquet"])
     account_rules = root / "research_lab" / "config" / "account_rules.json"
     pair_universe = root / "research_lab" / "config" / "pair_universe.json"
+    deployed_commit = root / "research_lab" / "DEPLOYED_COMMIT"
+    deployment_hash = root / "research_lab" / "DEPLOYMENT_PACKAGE_SHA256"
     payload["account_rules_version"] = json_version(account_rules)
     payload["account_rules_hash"] = file_exists_hash(account_rules)
     payload["pair_universe_version"] = json_version(pair_universe)
     payload["pair_universe_hash"] = file_exists_hash(pair_universe)
+    payload["source_commit"] = full_git_commit(root) or text_file_value(deployed_commit)
+    payload["code_hash"] = source_tree_hash(root)
+    payload["deployment_package_hash"] = text_file_value(deployment_hash)
     payload["account_simulator_version"] = "account-sim-v2"
     payload["account_validation_version"] = "account-validation-v1"
     account_validation = storage / "results" / "account_validation.json"

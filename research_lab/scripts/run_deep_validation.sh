@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="${ROOT_DIR:-/home/adrian/freqtrade}"
 VENV_DIR="${VENV_DIR:-.venv}"
 STORAGE_DIR="${STORAGE_DIR:-research_lab/storage}"
-LOCK_FILE="${LOCK_FILE:-/run/lock/adrian-quant-deep.lock}"
+LOCK_FILE="${LOCK_FILE:-$STORAGE_DIR/pipeline.lock}"
 RUN_PROMOTION="${RUN_PROMOTION:-0}"
 DEEP_MC_SIMS="${DEEP_MC_SIMS:-5000}"
 DEEP_BLOCK_SIZE="${DEEP_BLOCK_SIZE:-20}"
@@ -14,7 +14,7 @@ INITIAL_CASH="${INITIAL_CASH:-1000.0}"
 if [[ "${ADRIAN_DEEP_LOCKED:-0}" != "1" ]]; then
   mkdir -p "$STORAGE_DIR"
   if [[ ! -w "$(dirname "$LOCK_FILE")" ]]; then
-    LOCK_FILE="$STORAGE_DIR/deep.lock"
+    LOCK_FILE="$STORAGE_DIR/pipeline.lock"
   fi
   exec env ADRIAN_DEEP_LOCKED=1 LOCK_FILE="$LOCK_FILE" flock -n "$LOCK_FILE" "$0" "$@"
 fi
@@ -26,7 +26,8 @@ RUN_ID="${RUN_ID:-deep-$(python -m research_lab.run_manager --root "$ROOT_DIR" -
 export RUN_ID RUN_PROMOTION
 
 start_ts="$(date +%s)"
-PIPELINE_MODE=research "$ROOT_DIR/research_lab/scripts/run_pipeline.sh"
+ADRIAN_PIPELINE_LOCKED=1 LOCK_FILE="$LOCK_FILE" PIPELINE_MODE=research \
+  "$ROOT_DIR/research_lab/scripts/run_pipeline.sh"
 after_research_ts="$(date +%s)"
 research_seconds="$((after_research_ts - start_ts))"
 

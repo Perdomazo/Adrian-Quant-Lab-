@@ -121,3 +121,5 @@ docker-compose-*.yml
 research_lab/storage/
 research_lab/audit_integrity/
 research_lab/audit_integrity.zip
+research_lab/DEPLOYED_COMMIT
+research_lab/DEPLOYMENT_PACKAGE_SHA256

@@ -13,12 +13,12 @@ DOWNLOAD_CONFIG="${DOWNLOAD_CONFIG:-config.kucoin.example.json}"
 DOWNLOAD_TIMEFRAMES="${DOWNLOAD_TIMEFRAMES:-1h}"
 NEW_PAIRS_DAYS="${NEW_PAIRS_DAYS:-1200}"
 DOWNLOAD_DOCKER_IMAGE="${DOWNLOAD_DOCKER_IMAGE:-freqtradeorg/freqtrade:stable}"
-LOCK_FILE="${LOCK_FILE:-/run/lock/adrian-quant-ingest.lock}"
+LOCK_FILE="${LOCK_FILE:-$STORAGE_DIR/pipeline.lock}"
 
 if [[ "${ADRIAN_INGEST_LOCKED:-0}" != "1" ]]; then
   mkdir -p "$STORAGE_DIR"
   if [[ ! -w "$(dirname "$LOCK_FILE")" ]]; then
-    LOCK_FILE="$STORAGE_DIR/ingest.lock"
+    LOCK_FILE="$STORAGE_DIR/pipeline.lock"
   fi
   exec env ADRIAN_INGEST_LOCKED=1 LOCK_FILE="$LOCK_FILE" flock -n "$LOCK_FILE" "$0" "$@"
 fi
