@@ -317,6 +317,12 @@ def refresh_duckdb(storage: Path) -> None:
                 f"CREATE OR REPLACE VIEW account_rejections AS "
                 f"SELECT * FROM read_parquet('{sql_path(account_rejections)}')"
             )
+        deep_summary = storage / "results" / "deep_validation_summary.parquet"
+        if deep_summary.exists():
+            con.execute(
+                f"CREATE OR REPLACE VIEW deep_validation_summary AS "
+                f"SELECT * FROM read_parquet('{sql_path(deep_summary)}')"
+            )
     finally:
         con.close()
 

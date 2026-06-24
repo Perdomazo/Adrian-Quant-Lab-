@@ -829,3 +829,203 @@ Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf
 - `tailscale status` local tambien fallo porque `tailscaled` no estaba activo.
 - No se debe asumir todavia que `adrian-quant-ingest.timer` y `adrian-quant-research.timer`
   quedaron habilitados; queda pendiente confirmar desde una sesion SSH funcional.
+
+## Fase 2 - Separacion formal de pipelines - 2026-06-24
+
+Objetivo:
+
+```text
+Cerrar Fase 2 con tres modos, manifests separados y metricas de duracion.
+```
+
+### Paso 2.1 - Tres modos
+
+Se mantiene compatibilidad con `run_pipeline.sh`, pero ahora acepta:
+
+```text
+PIPELINE_MODE=ingest
+PIPELINE_MODE=research
+PIPELINE_MODE=deep
+```
+
+Tambien se agregan scripts explicitos:
+
+```text
+research_lab/scripts/run_daily_ingest.sh
+research_lab/scripts/run_research.sh
+research_lab/scripts/run_deep_validation.sh
+```
+
+Modo `ingest`:
+
+```text
+download
+migrate
+resample
+data_quality
+```
+
+Modo `research`:
+
+```text
+ingest completo
+features
+edge_engine
+walk_forward temporal_oos_fixed_params
+account_simulator
+account_validation
+snapshot
+```
+
+Modo `deep`:
+
+```text
+research
+deep_validation
+```
+
+Nota: `deep_validation` es una primera version mensual, no la implementacion estadistica
+completa de Fase 12.
+
+### Paso 2.2 - Manifests separados
+
+Manifests actuales:
+
+```text
+ingest_manifest.json
+run_manifest.json
+deep_validation_manifest.json
+```
+
+`ingest_manifest.json` queda separado de una corrida completa de investigacion.
+
+### Paso 2.3 - Metricas de duracion
+
+Se agrega:
+
+```text
+research_lab/pipeline_metrics.py
+```
+
+Campos registrados donde aplica:
+
+```text
+download_seconds
+migration_seconds
+resample_seconds
+data_quality_seconds
+features_seconds
+edge_engine_seconds
+walk_forward_seconds
+account_simulator_seconds
+account_validation_seconds
+snapshot_seconds
+deep_validation_seconds
+research_seconds
+total_seconds
+peak_memory_mb
+```
+
+Importante:
+
+- `peak_memory_mb` es una medicion best-effort del proceso/script o del proceso Python deep.
+- No sustituye aun una medicion exacta de max RSS por subproceso con `/usr/bin/time -v`.
+
+### Deep validation v1
+
+Se agrega:
+
+```text
+research_lab/deep_validation.py
+```
+
+Artefactos:
+
+```text
+deep_validation_summary.parquet
+deep_validation_manifest.json
+```
+
+Implementado:
+
+- Monte Carlo trade bootstrap sobre `account_trades`.
+- Block bootstrap por bloques de trades.
+- Sensibilidad simple de costes de 2, 5 y 10 bps.
+- Proxy de multiple testing con Benjamini-Hochberg sobre `mc_prob_negative`.
+
+No implementado todavia:
+
+- Deflated Sharpe Ratio.
+- PBO/CSCV.
+- Sensibilidad real de parametros.
+- Comparacion formal de versiones.
+
+### Fase 7 parcial
+
+Se agrega:
+
+```text
+research_lab/config/pair_universe.json
+```
+
+Version:
+
+```text
+core-universe-v1
+```
+
+`run_manifest.json` ahora registra:
+
+```text
+pair_universe_version
+pair_universe_hash
+```
+
+No se cambio todavia la unidad real de promocion. Sigue pendiente unificar:
+
+```text
+edge + edge_version + timeframe + pair_universe_version + account_rules_version
+```
+
+### Validacion local
+
+Comandos:
+
+```text
+python -m py_compile research_lab/pipeline_metrics.py research_lab/deep_validation.py research_lab/account_simulator.py research_lab/account_validation.py research_lab/ingest_manager.py research_lab/run_manager.py research_lab/warehouse.py
+pytest -q tests/test_account_simulator.py tests/test_account_validation.py tests/test_pipeline_modes.py
+bash -n research_lab/scripts/run_pipeline.sh
+bash -n research_lab/scripts/run_daily_ingest.sh
+bash -n research_lab/scripts/run_research.sh
+bash -n research_lab/scripts/run_deep_validation.sh
+```
+
+Resultado:
+
+```text
+21 passed
+py_compile: ok
+bash -n: ok
+```
+
+### Corte explicito
+
+Completado:
+
+- Fase 2 completa en codigo local.
+- Fase 7 iniciada solamente con `pair_universe.json` y hashes en manifest.
+- Fase 12 iniciada parcialmente dentro de `deep_validation.py`.
+
+No completado:
+
+- Fase 3 incremental.
+- Fase 4 account OOS.
+- Fase 5 historico desde 2021.
+- Fase 6 account_candidate.
+- Fase 7 unidad real de promocion.
+- Fase 8 perfiles research/freqtrade.
+- Fase 9 estrategia Freqtrade equivalente.
+- Fase 10 parity test.
+- Fase 11 WFO verdadero.
+- Fase 12 completa.
+- Fases 13 a 16.

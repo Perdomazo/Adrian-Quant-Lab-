@@ -1,5 +1,5 @@
 [Unit]
-Description=Adrian Quant Lab weekly full research pipeline
+Description=Adrian Quant Lab monthly deep validation pipeline
 After=network-online.target docker.service
 Wants=network-online.target docker.service
 
@@ -20,4 +20,6 @@ Environment=DOWNLOAD_TIMEFRAMES=1h
 Environment=DOWNLOAD_DOCKER_IMAGE=freqtradeorg/freqtrade:stable
 Environment=NEW_PAIRS_DAYS=1200
 Environment=RUN_PROMOTION=0
-ExecStart=/bin/bash /home/adrian/freqtrade/research_lab/scripts/run_research.sh
+Environment=DEEP_MC_SIMS=5000
+Environment=DEEP_BLOCK_SIZE=20
+ExecStart=/bin/bash /home/adrian/freqtrade/research_lab/scripts/run_deep_validation.sh

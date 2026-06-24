@@ -28,9 +28,52 @@ source "$VENV_DIR/bin/activate"
 
 RUN_ID="${RUN_ID:-ingest-$(python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" new-id)}"
 export RUN_ID
+PIPELINE_START_TS="$(date +%s)"
+STAGE_START_TS=0
+
+peak_memory_mb() {
+  if [[ -r "/proc/$$/status" ]]; then
+    awk '/VmHWM:/ {printf "%.3f", $2 / 1024}' "/proc/$$/status"
+  else
+    echo "0"
+  fi
+}
+
+record_metric() {
+  local stage="$1"
+  local seconds="$2"
+  python -m research_lab.pipeline_metrics \
+    --manifest "$STORAGE_DIR/results/ingest_manifest.json" \
+    --manifest "$STORAGE_DIR/results/ingest_runs/$RUN_ID/ingest_manifest.json" \
+    --stage "$stage" \
+    --seconds "$seconds" \
+    --peak-memory-mb "$(peak_memory_mb)" || true
+}
+
+record_total() {
+  local end_ts
+  end_ts="$(date +%s)"
+  python -m research_lab.pipeline_metrics \
+    --manifest "$STORAGE_DIR/results/ingest_manifest.json" \
+    --manifest "$STORAGE_DIR/results/ingest_runs/$RUN_ID/ingest_manifest.json" \
+    --total-seconds "$((end_ts - PIPELINE_START_TS))" \
+    --peak-memory-mb "$(peak_memory_mb)" || true
+}
+
+stage_start() {
+  STAGE_START_TS="$(date +%s)"
+}
+
+stage_end() {
+  local stage="$1"
+  local end_ts
+  end_ts="$(date +%s)"
+  record_metric "$stage" "$((end_ts - STAGE_START_TS))"
+}
 
 on_error() {
   local exit_code=$?
+  record_total
   python -m research_lab.ingest_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" \
     --status failed \
     --error "ingest_failed_exit_${exit_code}" || true
@@ -41,6 +84,7 @@ trap on_error ERR
 python -m research_lab.ingest_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" \
   --status running
 
+stage_start
 if [[ "$DOWNLOAD_DATA" == "1" ]]; then
   IFS=',' read -r -a PAIR_LIST <<< "$PAIRS"
   IFS=',' read -r -a DOWNLOAD_TIMEFRAME_LIST <<< "$DOWNLOAD_TIMEFRAMES"
@@ -75,7 +119,9 @@ if [[ "$DOWNLOAD_DATA" == "1" ]]; then
 else
   echo "DOWNLOAD_DATA=0; skipping freqtrade download-data."
 fi
+stage_end download
 
+stage_start
 shopt -s nullglob
 SOURCE_FILES=("$SOURCE_DIR"/*.feather)
 if ((${#SOURCE_FILES[@]} > 0)); then
@@ -84,17 +130,23 @@ if ((${#SOURCE_FILES[@]} > 0)); then
 else
   echo "No feather files found in $SOURCE_DIR; using existing Parquet warehouse."
 fi
+stage_end migration
 
+stage_start
 python -m research_lab.warehouse --storage "$STORAGE_DIR" resample \
   --source-timeframe 1h \
   --target-timeframe 4h
+stage_end resample
 
+stage_start
 python -m research_lab.data_quality \
   --storage "$STORAGE_DIR" \
   --timeframes "$TIMEFRAMES" \
   --run-id "$RUN_ID" \
   --fail-on-error
+stage_end data_quality
 
+record_total
 python -m research_lab.ingest_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" \
   --status success
 trap - ERR

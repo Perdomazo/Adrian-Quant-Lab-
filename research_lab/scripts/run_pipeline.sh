@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/home/adrian/freqtrade}"
 VENV_DIR="${VENV_DIR:-.venv}"
+PIPELINE_MODE="${PIPELINE_MODE:-research}"
 SOURCE_DIR="${SOURCE_DIR:-user_data/data/kucoin}"
 STORAGE_DIR="${STORAGE_DIR:-research_lab/storage}"
 TIMEFRAMES="${TIMEFRAMES:-1h,4h}"
@@ -19,6 +20,15 @@ PROMOTION_RULES="${PROMOTION_RULES:-research_lab/config/promotion_rules.json}"
 DECISION_RULES="${DECISION_RULES:-research_lab/config/decision_rules.json}"
 ACCOUNT_RULES="${ACCOUNT_RULES:-research_lab/config/account_rules.json}"
 
+if [[ "$PIPELINE_MODE" == "ingest" ]]; then
+  exec "$ROOT_DIR/research_lab/scripts/run_daily_ingest.sh" "$@"
+elif [[ "$PIPELINE_MODE" == "deep" ]]; then
+  exec "$ROOT_DIR/research_lab/scripts/run_deep_validation.sh" "$@"
+elif [[ "$PIPELINE_MODE" != "research" ]]; then
+  echo "Unsupported PIPELINE_MODE=$PIPELINE_MODE" >&2
+  exit 2
+fi
+
 if [[ "${ADRIAN_PIPELINE_LOCKED:-0}" != "1" ]]; then
   mkdir -p "$STORAGE_DIR"
   if [[ ! -w "$(dirname "$LOCK_FILE")" ]]; then
@@ -32,9 +42,52 @@ source "$VENV_DIR/bin/activate"
 
 RUN_ID="${RUN_ID:-$(python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" new-id)}"
 export RUN_ID
+PIPELINE_START_TS="$(date +%s)"
+STAGE_START_TS=0
+
+peak_memory_mb() {
+  if [[ -r "/proc/$$/status" ]]; then
+    awk '/VmHWM:/ {printf "%.3f", $2 / 1024}' "/proc/$$/status"
+  else
+    echo "0"
+  fi
+}
+
+record_metric() {
+  local stage="$1"
+  local seconds="$2"
+  python -m research_lab.pipeline_metrics \
+    --manifest "$STORAGE_DIR/results/runs/$RUN_ID/run_manifest.json" \
+    --manifest "$STORAGE_DIR/results/latest/run_manifest.json" \
+    --stage "$stage" \
+    --seconds "$seconds" \
+    --peak-memory-mb "$(peak_memory_mb)" || true
+}
+
+record_total() {
+  local end_ts
+  end_ts="$(date +%s)"
+  python -m research_lab.pipeline_metrics \
+    --manifest "$STORAGE_DIR/results/runs/$RUN_ID/run_manifest.json" \
+    --manifest "$STORAGE_DIR/results/latest/run_manifest.json" \
+    --total-seconds "$((end_ts - PIPELINE_START_TS))" \
+    --peak-memory-mb "$(peak_memory_mb)" || true
+}
+
+stage_start() {
+  STAGE_START_TS="$(date +%s)"
+}
+
+stage_end() {
+  local stage="$1"
+  local end_ts
+  end_ts="$(date +%s)"
+  record_metric "$stage" "$((end_ts - STAGE_START_TS))"
+}
 
 on_error() {
   local exit_code=$?
+  record_total
   python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" complete \
     --status failed \
     --error "pipeline_failed_exit_${exit_code}" || true
@@ -44,6 +97,7 @@ trap on_error ERR
 
 python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" start
 
+stage_start
 if [[ "$DOWNLOAD_DATA" == "1" ]]; then
   IFS=',' read -r -a PAIR_LIST <<< "$PAIRS"
   IFS=',' read -r -a DOWNLOAD_TIMEFRAME_LIST <<< "$DOWNLOAD_TIMEFRAMES"
@@ -78,7 +132,9 @@ if [[ "$DOWNLOAD_DATA" == "1" ]]; then
 else
   echo "DOWNLOAD_DATA=0; skipping freqtrade download-data."
 fi
+stage_end download
 
+stage_start
 shopt -s nullglob
 SOURCE_FILES=("$SOURCE_DIR"/*.feather)
 if ((${#SOURCE_FILES[@]} > 0)); then
@@ -87,28 +143,47 @@ if ((${#SOURCE_FILES[@]} > 0)); then
 else
   echo "No feather files found in $SOURCE_DIR; using existing Parquet warehouse."
 fi
+stage_end migration
 
+stage_start
 python -m research_lab.warehouse --storage "$STORAGE_DIR" resample \
   --source-timeframe 1h \
   --target-timeframe 4h
+stage_end resample
 
+stage_start
 python -m research_lab.data_quality \
   --storage "$STORAGE_DIR" \
   --timeframes "$TIMEFRAMES" \
   --run-id "$RUN_ID" \
   --fail-on-error
+stage_end data_quality
 
+stage_start
 python -m research_lab.warehouse --storage "$STORAGE_DIR" features \
   --timeframes "$TIMEFRAMES"
+stage_end features
 
+stage_start
+python -m research_lab.edge_engine \
+  --storage "$STORAGE_DIR" \
+  --pairs "$PAIRS" \
+  --timeframes "$TIMEFRAMES" \
+  --decision-rules "$DECISION_RULES" \
+  --run-id "$RUN_ID"
+stage_end edge_engine
+
+stage_start
 python -m research_lab.edge_engine \
   --storage "$STORAGE_DIR" \
   --pairs "$PAIRS" \
   --timeframes "$TIMEFRAMES" \
   --decision-rules "$DECISION_RULES" \
   --run-id "$RUN_ID" \
-  --walk-forward
+  --only-walk-forward
+stage_end walk_forward
 
+stage_start
 python -m research_lab.account_simulator \
   --storage "$STORAGE_DIR" \
   --exchange kucoin \
@@ -116,14 +191,20 @@ python -m research_lab.account_simulator \
   --timeframes "$TIMEFRAMES" \
   --rules "$ACCOUNT_RULES" \
   --run-id "$RUN_ID"
+stage_end account_simulator
 
+stage_start
 python -m research_lab.account_validation \
   --storage "$STORAGE_DIR" \
   --rules "$ACCOUNT_RULES" \
   --run-id "$RUN_ID" \
   --fail-on-error
+stage_end account_validation
 
+stage_start
 python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" snapshot
+stage_end snapshot
+record_total
 python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" complete \
   --status success
 trap - ERR

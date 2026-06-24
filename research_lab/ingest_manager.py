@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import sys
 from pathlib import Path
@@ -29,7 +30,10 @@ def base_manifest(root: Path, storage: Path, run_id: str, status: str) -> dict[s
     return {
         "run_id": run_id,
         "status": status,
+        "pipeline_mode": "ingest",
         "started_at": utc_now(),
+        "download_method": os.environ.get("DOWNLOAD_METHOD"),
+        "download_timeframes": os.environ.get("DOWNLOAD_TIMEFRAMES"),
         "completed_at": None,
         "git_commit": short_git_commit(root),
         "python_version": sys.version.split()[0],

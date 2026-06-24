@@ -1,0 +1,11 @@
+{
+  "version": "core-universe-v1",
+  "exchange": "kucoin",
+  "pairs": [
+    "BTC/USDT",
+    "ETH/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "DOGE/USDT"
+  ]
+}

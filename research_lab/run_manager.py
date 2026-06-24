@@ -27,6 +27,8 @@ RUN_FILES = [
     "account_equity.parquet",
     "account_rejections.parquet",
     "account_validation.json",
+    "deep_validation_summary.parquet",
+    "deep_validation_manifest.json",
 ]
 
 
@@ -128,9 +130,11 @@ def base_manifest(root: Path, storage: Path, run_id: str, status: str) -> dict[s
     decision_rules = root / "research_lab" / "config" / "decision_rules.json"
     promotion_rules = root / "research_lab" / "config" / "promotion_rules.json"
     account_rules = root / "research_lab" / "config" / "account_rules.json"
+    pair_universe = root / "research_lab" / "config" / "pair_universe.json"
     return {
         "run_id": run_id,
         "status": status,
+        "pipeline_mode": os.environ.get("PIPELINE_MODE", "research"),
         "started_at": utc_now(),
         "completed_at": None,
         "git_commit": short_git_commit(root),
@@ -146,6 +150,8 @@ def base_manifest(root: Path, storage: Path, run_id: str, status: str) -> dict[s
         "promotion_rules_version": json_version(promotion_rules),
         "account_rules_version": json_version(account_rules),
         "account_rules_hash": file_exists_hash(account_rules),
+        "pair_universe_version": json_version(pair_universe),
+        "pair_universe_hash": file_exists_hash(pair_universe),
         "account_simulator_version": "account-sim-v2",
         "account_validation_version": "account-validation-v1",
         "random_seed": 17062026,
@@ -191,8 +197,11 @@ def update_run(
     payload["data_hash"] = hash_many([storage / "ohlcv_manifest.parquet"])
     payload["features_hash"] = hash_many([storage / "features_manifest.parquet"])
     account_rules = root / "research_lab" / "config" / "account_rules.json"
+    pair_universe = root / "research_lab" / "config" / "pair_universe.json"
     payload["account_rules_version"] = json_version(account_rules)
     payload["account_rules_hash"] = file_exists_hash(account_rules)
+    payload["pair_universe_version"] = json_version(pair_universe)
+    payload["pair_universe_hash"] = file_exists_hash(pair_universe)
     payload["account_simulator_version"] = "account-sim-v2"
     payload["account_validation_version"] = "account-validation-v1"
     account_validation = storage / "results" / "account_validation.json"

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Adrian Quant Lab deep validation monthly
+
+[Timer]
+OnCalendar=Sun *-*-01..07 05:00:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=adrian-quant-deep.service
+
+[Install]
+WantedBy=timers.target
