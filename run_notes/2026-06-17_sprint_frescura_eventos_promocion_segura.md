@@ -627,3 +627,12 @@ Nota sobre hooks:
 - `codespell` marca muchas palabras en espanol como falsos positivos.
 - `ruff` y `mypy` reportan deuda de estilo/tipos en scripts de laboratorio.
 - Para publicar el repo y permitir `pull` en otra maquina, se procede con commit `--no-verify`.
+
+Resultado:
+
+```text
+commit: f6d2d4666 Add Adrian Quant Lab research pipeline
+remote: adrian https://github.com/Perdomazo/Adrian-Quant-Lab-.git
+branch: develop
+push: correcto
+```
