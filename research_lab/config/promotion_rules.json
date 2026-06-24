@@ -1,8 +1,9 @@
 {
-  "version": "promotion-rules-v1",
+  "version": "promotion-rules-v2",
   "enabled": true,
   "dry_run_only": true,
-  "min_observation_days": 14,
+  "min_consecutive_candidate_runs": 4,
+  "min_observation_calendar_days": 28,
   "min_score": 70,
   "min_profit_factor": 1.2,
   "min_positive_fold_rate": 0.6,

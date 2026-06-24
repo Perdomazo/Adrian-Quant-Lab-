@@ -14,10 +14,11 @@ from research_lab.run_manager import atomic_write_json, load_manifest
 
 
 DEFAULT_PROMOTION_RULES = {
-    "version": "promotion-rules-v1",
+    "version": "promotion-rules-v2",
     "enabled": True,
     "dry_run_only": True,
-    "min_observation_days": 14,
+    "min_consecutive_candidate_runs": 4,
+    "min_observation_calendar_days": 28,
     "min_score": 70,
     "min_profit_factor": 1.2,
     "min_positive_fold_rate": 0.6,
@@ -78,6 +79,7 @@ def consecutive_candidate_stats(
         return {
             "consecutive_candidate_days": 0,
             "consecutive_candidate_runs": 0,
+            "observation_calendar_days": 0,
             "first_current_streak_date": None,
         }
     subset = history[
@@ -87,41 +89,34 @@ def consecutive_candidate_stats(
         return {
             "consecutive_candidate_days": 0,
             "consecutive_candidate_runs": 0,
+            "observation_calendar_days": 0,
             "first_current_streak_date": None,
         }
 
     subset["snapshot_time"] = pd.to_datetime(subset["snapshot_time"], utc=True)
     subset = subset.sort_values("snapshot_time")
-    daily = subset.groupby(subset["snapshot_time"].dt.date, as_index=False).tail(1)
     streak_days: list[Any] = []
     streak_runs = 0
-    previous_day = None
+    first_current_streak_date = None
+    observation_calendar_days = 0
 
-    for row in reversed(list(daily.itertuples(index=False))):
+    for row in reversed(list(subset.itertuples(index=False))):
         current_day = row.snapshot_time.date()
         if getattr(row, "verdict") != "candidate":
             break
-        if previous_day is not None and (previous_day - current_day).days != 1:
-            break
         streak_days.append(current_day)
-        previous_day = current_day
+        streak_runs += 1
 
-    if streak_days:
+    if streak_runs:
         first_day = min(streak_days)
         last_day = max(streak_days)
-        run_subset = subset[
-            (subset["snapshot_time"].dt.date >= first_day)
-            & (subset["snapshot_time"].dt.date <= last_day)
-            & (subset["verdict"] == "candidate")
-        ]
-        streak_runs = int(len(run_subset))
+        observation_calendar_days = (last_day - first_day).days + 1
         first_current_streak_date = first_day.isoformat()
-    else:
-        first_current_streak_date = None
 
     return {
-        "consecutive_candidate_days": int(len(streak_days)),
+        "consecutive_candidate_days": int(len(set(streak_days))),
         "consecutive_candidate_runs": streak_runs,
+        "observation_calendar_days": observation_calendar_days,
         "first_current_streak_date": first_current_streak_date,
     }
 
@@ -240,9 +235,14 @@ def select_candidates(storage: Path, rules: dict, run_id: str | None = None) -> 
     else:
         merged["consecutive_candidate_days"] = 0
         merged["consecutive_candidate_runs"] = 0
+        merged["observation_calendar_days"] = 0
         merged["first_current_streak_date"] = None
-    min_consecutive_days = int(
-        rules.get("min_consecutive_candidate_days", rules["min_observation_days"])
+    min_consecutive_runs = int(rules.get("min_consecutive_candidate_runs", 4))
+    min_observation_calendar_days = int(
+        rules.get(
+            "min_observation_calendar_days",
+            rules.get("min_observation_days", 28),
+        )
     )
     filtered = merged[
         (merged["verdict"] == "candidate")
@@ -254,7 +254,8 @@ def select_candidates(storage: Path, rules: dict, run_id: str | None = None) -> 
         & (merged["median_expectancy"] >= float(rules.get("min_median_oos_expectancy", 0.0)))
         & (merged["worst_test_dd"] >= float(rules.get("min_worst_oos_drawdown", -0.30)))
         & (merged["total_test_trades"] >= int(rules["min_total_test_trades"]))
-        & (merged["consecutive_candidate_days"] >= min_consecutive_days)
+        & (merged["consecutive_candidate_runs"] >= min_consecutive_runs)
+        & (merged["observation_calendar_days"] >= min_observation_calendar_days)
         & (merged["timeframe"].isin(rules["allowed_timeframes"]))
         & (merged["edge"].isin(rules["allowed_edges"]))
     ].copy()
@@ -567,6 +568,7 @@ def main() -> None:
         "observation_days": int(top["observation_days"]),
         "consecutive_candidate_days": int(top["consecutive_candidate_days"]),
         "consecutive_candidate_runs": int(top["consecutive_candidate_runs"]),
+        "observation_calendar_days": int(top["observation_calendar_days"]),
         "first_current_streak_date": top.get("first_current_streak_date"),
         "files": files,
         **gate_context,

@@ -1,0 +1,23 @@
+[Unit]
+Description=Adrian Quant Lab weekly full research pipeline
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=adrian
+WorkingDirectory=/home/adrian/freqtrade
+Environment=ROOT_DIR=/home/adrian/freqtrade
+Environment=VENV_DIR=.venv-lab
+Environment=SOURCE_DIR=user_data/data/kucoin
+Environment=STORAGE_DIR=research_lab/storage
+Environment=TIMEFRAMES=1h,4h
+Environment=PAIRS=BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT,DOGE/USDT
+Environment=DOWNLOAD_DATA=1
+Environment=DOWNLOAD_METHOD=docker
+Environment=DOWNLOAD_CONFIG=config.kucoin.example.json
+Environment=DOWNLOAD_TIMEFRAMES=1h
+Environment=DOWNLOAD_DOCKER_IMAGE=freqtradeorg/freqtrade:stable
+Environment=NEW_PAIRS_DAYS=1200
+Environment=RUN_PROMOTION=0
+ExecStart=/bin/bash /home/adrian/freqtrade/research_lab/scripts/run_pipeline.sh

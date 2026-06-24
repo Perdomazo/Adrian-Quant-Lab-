@@ -13,36 +13,33 @@ DOWNLOAD_CONFIG="${DOWNLOAD_CONFIG:-config.kucoin.example.json}"
 DOWNLOAD_TIMEFRAMES="${DOWNLOAD_TIMEFRAMES:-1h}"
 NEW_PAIRS_DAYS="${NEW_PAIRS_DAYS:-1200}"
 DOWNLOAD_DOCKER_IMAGE="${DOWNLOAD_DOCKER_IMAGE:-freqtradeorg/freqtrade:stable}"
-LOCK_FILE="${LOCK_FILE:-/run/lock/adrian-quant-pipeline.lock}"
-RUN_PROMOTION="${RUN_PROMOTION:-0}"
-PROMOTION_RULES="${PROMOTION_RULES:-research_lab/config/promotion_rules.json}"
-DECISION_RULES="${DECISION_RULES:-research_lab/config/decision_rules.json}"
-ACCOUNT_RULES="${ACCOUNT_RULES:-research_lab/config/account_rules.json}"
+LOCK_FILE="${LOCK_FILE:-/run/lock/adrian-quant-ingest.lock}"
 
-if [[ "${ADRIAN_PIPELINE_LOCKED:-0}" != "1" ]]; then
+if [[ "${ADRIAN_INGEST_LOCKED:-0}" != "1" ]]; then
   mkdir -p "$STORAGE_DIR"
   if [[ ! -w "$(dirname "$LOCK_FILE")" ]]; then
-    LOCK_FILE="$STORAGE_DIR/pipeline.lock"
+    LOCK_FILE="$STORAGE_DIR/ingest.lock"
   fi
-  exec env ADRIAN_PIPELINE_LOCKED=1 LOCK_FILE="$LOCK_FILE" flock -n "$LOCK_FILE" "$0" "$@"
+  exec env ADRIAN_INGEST_LOCKED=1 LOCK_FILE="$LOCK_FILE" flock -n "$LOCK_FILE" "$0" "$@"
 fi
 
 cd "$ROOT_DIR"
 source "$VENV_DIR/bin/activate"
 
-RUN_ID="${RUN_ID:-$(python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" new-id)}"
+RUN_ID="${RUN_ID:-ingest-$(python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" new-id)}"
 export RUN_ID
 
 on_error() {
   local exit_code=$?
-  python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" complete \
+  python -m research_lab.ingest_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" \
     --status failed \
-    --error "pipeline_failed_exit_${exit_code}" || true
+    --error "ingest_failed_exit_${exit_code}" || true
   exit "$exit_code"
 }
 trap on_error ERR
 
-python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" start
+python -m research_lab.ingest_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" \
+  --status running
 
 if [[ "$DOWNLOAD_DATA" == "1" ]]; then
   IFS=',' read -r -a PAIR_LIST <<< "$PAIRS"
@@ -98,41 +95,6 @@ python -m research_lab.data_quality \
   --run-id "$RUN_ID" \
   --fail-on-error
 
-python -m research_lab.warehouse --storage "$STORAGE_DIR" features \
-  --timeframes "$TIMEFRAMES"
-
-python -m research_lab.edge_engine \
-  --storage "$STORAGE_DIR" \
-  --pairs "$PAIRS" \
-  --timeframes "$TIMEFRAMES" \
-  --decision-rules "$DECISION_RULES" \
-  --run-id "$RUN_ID" \
-  --walk-forward
-
-python -m research_lab.account_simulator \
-  --storage "$STORAGE_DIR" \
-  --exchange kucoin \
-  --pairs "$PAIRS" \
-  --timeframes "$TIMEFRAMES" \
-  --rules "$ACCOUNT_RULES" \
-  --run-id "$RUN_ID"
-
-python -m research_lab.account_validation \
-  --storage "$STORAGE_DIR" \
-  --rules "$ACCOUNT_RULES" \
-  --run-id "$RUN_ID" \
-  --fail-on-error
-
-python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" snapshot
-python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" complete \
+python -m research_lab.ingest_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" \
   --status success
 trap - ERR
-
-if [[ "$RUN_PROMOTION" == "1" ]]; then
-  python -m research_lab.promotion \
-    --root "$ROOT_DIR" \
-    --storage "$STORAGE_DIR" \
-    --rules "$PROMOTION_RULES" \
-    --run-id "$RUN_ID" \
-    --execute
-fi

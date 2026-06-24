@@ -26,6 +26,7 @@ RUN_FILES = [
     "account_trades.parquet",
     "account_equity.parquet",
     "account_rejections.parquet",
+    "account_validation.json",
 ]
 
 
@@ -145,7 +146,8 @@ def base_manifest(root: Path, storage: Path, run_id: str, status: str) -> dict[s
         "promotion_rules_version": json_version(promotion_rules),
         "account_rules_version": json_version(account_rules),
         "account_rules_hash": file_exists_hash(account_rules),
-        "account_simulator_version": "account-sim-v1",
+        "account_simulator_version": "account-sim-v2",
+        "account_validation_version": "account-validation-v1",
         "random_seed": 17062026,
         "expected_last_complete_candle": dq.get("expected_last_complete_candle"),
         "actual_last_available_candle": dq.get("actual_last_available_candle"),
@@ -191,7 +193,12 @@ def update_run(
     account_rules = root / "research_lab" / "config" / "account_rules.json"
     payload["account_rules_version"] = json_version(account_rules)
     payload["account_rules_hash"] = file_exists_hash(account_rules)
-    payload["account_simulator_version"] = "account-sim-v1"
+    payload["account_simulator_version"] = "account-sim-v2"
+    payload["account_validation_version"] = "account-validation-v1"
+    account_validation = storage / "results" / "account_validation.json"
+    if account_validation.exists():
+        validation = json.loads(account_validation.read_text(encoding="utf-8"))
+        payload["account_validation_status"] = validation.get("status")
 
     atomic_write_json(manifest_path(storage, run_id), payload)
     latest_dir = storage / "results" / "latest"

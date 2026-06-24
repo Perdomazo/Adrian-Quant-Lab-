@@ -636,3 +636,161 @@ remote: adrian https://github.com/Perdomazo/Adrian-Quant-Lab-.git
 branch: develop
 push: correcto
 ```
+
+## Arquitectura ingest/research y account-sim-v2 - 2026-06-24
+
+Objetivo:
+
+```text
+Separar corrida diaria ligera de investigacion completa, subir account simulator a v2
+y agregar un gate automatico de validacion de cuenta antes de publicar snapshots.
+```
+
+### Account simulator v2
+
+Cambios aplicados:
+
+- `ACCOUNT_SIMULATOR_VERSION=account-sim-v2`.
+- `AccountConfig.from_dict()` ahora valida campos faltantes, campos desconocidos,
+  rangos invalidos, politicas no soportadas y valores no finitos.
+- Si hay mas senales simultaneas que slots disponibles, ya no rechaza todas:
+  abre hasta `max_open_positions` y rechaza solo el excedente con `max_positions`.
+- La seleccion de excedentes usa hash deterministico de la senal, no orden alfabetico
+  ni ranking de backtest.
+- Las entradas abiertas siguen asignacion proporcional entre candidatos seleccionados.
+- `trade_id` y `position_id` ahora son unicos por operacion cerrada.
+- Si una vela trae entry y exit simultaneos para el mismo par, la salida tiene prioridad
+  y la entrada se rechaza como `exit_priority`.
+- Las ordenes pendientes vencidas usan `execute_date <= date`; si falta una vela,
+  se reprograman al siguiente open disponible o se descartan si no existe siguiente barra.
+- `account_equity.parquet` agrega `max_pair_exposure` y `pair_exposures` para poder
+  validar exposicion por par.
+- `profit_factor` de cuenta evita `inf` usando un valor finito maximo cuando no hay perdidas.
+
+### Account validation
+
+Se agrega:
+
+```text
+research_lab/account_validation.py
+```
+
+Genera:
+
+```text
+research_lab/storage/results/account_validation.json
+```
+
+Valida:
+
+- `equity = cash + market_value`.
+- `cash >= 0`.
+- `exposure <= max_total_exposure`.
+- `max_pair_exposure <= max_pair_exposure` de reglas.
+- `open_positions <= max_open_positions`.
+- `entry_date > signal_date`.
+- `exit_date >= entry_date`.
+- `trade_id`/`position_id` sin duplicados.
+- Sin NaN ni infinitos en salidas numericas.
+- Todos los `run_id` coinciden con la corrida.
+
+Integracion:
+
+- `run_pipeline.sh` ejecuta `account_validation --fail-on-error` despues de
+  `account_simulator` y antes de `snapshot`.
+- `run_manager.py` copia `account_validation.json` en snapshots.
+- El manifest registra `account_simulator_version=account-sim-v2`,
+  `account_validation_version=account-validation-v1` y `account_validation_status`.
+
+### Pipeline diario ligero
+
+Se agrega:
+
+```text
+research_lab/scripts/run_daily_ingest.sh
+research_lab/ingest_manager.py
+```
+
+El ingest diario hace solo:
+
+```text
+download-data
+warehouse migrate
+warehouse resample 1h -> 4h
+data_quality --fail-on-error
+ingest_manifest.json
+```
+
+No ejecuta:
+
+```text
+features
+edge_engine
+walk_forward
+account_simulator
+promotion
+```
+
+### Timers nuevos
+
+Se agregan:
+
+```text
+research_lab/systemd/adrian-quant-ingest.service
+research_lab/systemd/adrian-quant-ingest.timer
+research_lab/systemd/adrian-quant-research.service
+research_lab/systemd/adrian-quant-research.timer
+```
+
+Horarios:
+
+```text
+adrian-quant-ingest.timer: diario 03:30, RandomizedDelaySec=120
+adrian-quant-research.timer: domingo 04:00, RandomizedDelaySec=180
+```
+
+`RUN_PROMOTION=0` se mantiene en el research semanal.
+
+### Promotion rules
+
+Cambios:
+
+- `promotion-rules-v2`.
+- Se reemplaza `min_observation_days=14`.
+- Nuevas reglas:
+
+```json
+{
+  "min_consecutive_candidate_runs": 4,
+  "min_observation_calendar_days": 28
+}
+```
+
+La promocion ahora exige supervivencia por runs consecutivos y tiempo calendario,
+lo cual es compatible con investigacion semanal.
+
+### Validacion local
+
+Comandos ejecutados:
+
+```text
+python -m py_compile research_lab/account_simulator.py research_lab/account_validation.py research_lab/ingest_manager.py research_lab/run_manager.py research_lab/promotion.py
+pytest -q tests/test_account_simulator.py tests/test_account_validation.py
+bash -n research_lab/scripts/run_pipeline.sh
+bash -n research_lab/scripts/run_daily_ingest.sh
+git diff --check
+```
+
+Resultados:
+
+```text
+19 passed
+py_compile: ok
+bash -n: ok
+git diff --check: ok
+```
+
+Nota:
+
+- `systemd-analyze verify` no fue concluyente en el entorno local por permisos
+  (`Operation not permitted`), no por un error especifico de unit.

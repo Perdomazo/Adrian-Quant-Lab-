@@ -228,7 +228,7 @@ def test_three_simultaneous_signals_allocate_pro_rata():
         fee=0.0,
         risk_per_trade=1.0,
         max_total_exposure=0.30,
-        max_pair_exposure=1.0,
+        max_pair_exposure=0.30,
         max_stake=1000.0,
         min_stake=1.0,
     )
@@ -240,6 +240,64 @@ def test_three_simultaneous_signals_allocate_pro_rata():
     assert rejections.empty
 
 
+def test_more_signals_than_slots_opens_available_slots_only():
+    data = {}
+    signals = []
+    for pair in ["BTC/USDT", "ETH/USDT", "SOL/USDT"]:
+        data.update(features(pair=pair))
+        signals.append(entry_signal(pair=pair, risk=0.01))
+    config = cfg(
+        fee=0.0,
+        risk_per_trade=1.0,
+        max_open_positions=2,
+        max_total_exposure=0.75,
+        max_pair_exposure=0.30,
+        max_stake=1000.0,
+        min_stake=1.0,
+    )
+    _, _, summary, rejections = run_sim(data, signals, config)
+
+    assert summary.iloc[0]["entries_opened"] == 2
+    assert summary.iloc[0]["max_concurrent_positions"] == 2
+    assert len(rejections) == 1
+    assert rejections.iloc[0]["reason"] == "max_positions"
+
+
+def test_global_exposure_limit_is_never_exceeded():
+    data = {}
+    signals = []
+    for pair in ["BTC/USDT", "ETH/USDT", "SOL/USDT"]:
+        data.update(features(pair=pair))
+        signals.append(entry_signal(pair=pair, risk=0.01))
+    config = cfg(
+        fee=0.0,
+        risk_per_trade=1.0,
+        max_total_exposure=0.25,
+        max_pair_exposure=0.25,
+        max_stake=1000.0,
+        min_stake=1.0,
+    )
+    _, equity, summary, _ = run_sim(data, signals, config)
+
+    assert equity["exposure"].max() <= 0.25 + 1e-9
+    assert summary.iloc[0]["max_exposure"] <= 0.25 + 1e-9
+
+
+def test_pair_exposure_limit_is_never_exceeded():
+    config = cfg(
+        fee=0.0,
+        risk_per_trade=1.0,
+        max_total_exposure=0.75,
+        max_pair_exposure=0.10,
+        max_stake=1000.0,
+        min_stake=1.0,
+    )
+    _, equity, summary, _ = run_sim(features(), [entry_signal(risk=0.01)], config)
+
+    assert equity["max_pair_exposure"].max() <= 0.10 + 1e-9
+    assert summary.iloc[0]["max_pair_exposure"] <= 0.10 + 1e-9
+
+
 def test_insufficient_capital_never_makes_cash_negative():
     config = cfg(fee=0.0, risk_per_trade=1.0, max_total_exposure=0.01, min_stake=20.0)
     trades, equity, summary, rejections = run_sim(features(), [entry_signal(risk=0.01)], config)
@@ -248,6 +306,70 @@ def test_insufficient_capital_never_makes_cash_negative():
     assert summary.iloc[0]["entries_opened"] == 0
     assert rejections.iloc[0]["reason"] == "below_min_stake"
     assert (equity["cash"] >= -0.000001).all()
+
+
+def test_entry_and_exit_same_candle_prioritizes_exit():
+    trades, _, summary, rejections = run_sim(
+        features(),
+        [entry_signal(risk=0.02), exit_signal(date="2025-01-01 00:00:00+00:00")],
+        cfg(fee=0.0, entry_slippage=0.0, exit_slippage=0.0),
+    )
+
+    assert trades.empty
+    assert summary.iloc[0]["entries_opened"] == 0
+    assert rejections.iloc[0]["reason"] == "exit_priority"
+
+
+def test_trade_ids_are_unique_for_repeated_pair_trades():
+    data = features(
+        rows=[
+            ("2025-01-01 00:00:00+00:00", 100.0, 101.0, 99.0, 100.0),
+            ("2025-01-01 01:00:00+00:00", 100.0, 120.0, 99.0, 110.0),
+            ("2025-01-01 02:00:00+00:00", 100.0, 101.0, 99.0, 100.0),
+            ("2025-01-01 03:00:00+00:00", 100.0, 120.0, 99.0, 110.0),
+        ]
+    )
+    trades, _, _, _ = run_sim(
+        data,
+        [
+            entry_signal(risk=0.02),
+            entry_signal(date="2025-01-01 02:00:00+00:00", risk=0.02),
+        ],
+        cfg(fee=0.0, entry_slippage=0.0, exit_slippage=0.0),
+    )
+
+    assert len(trades) == 2
+    assert not trades["trade_id"].duplicated().any()
+    assert not trades["position_id"].duplicated().any()
+
+
+def test_invalid_account_config_is_rejected():
+    payload = {
+        "initial_cash": 1000.0,
+        "risk_per_trade": 0.005,
+        "max_open_positions": 3,
+        "max_total_exposure": 0.75,
+        "max_pair_exposure": 0.30,
+        "min_stake": 10.0,
+        "max_stake": 250.0,
+        "fee": 0.001,
+        "entry_slippage": 0.0005,
+        "exit_slippage": 0.0005,
+        "stop_slippage": 0.001,
+        "stop_mult": 3.0,
+        "take_profit_mult": 5.0,
+        "min_stop_distance": 0.01,
+        "max_stop_distance": 0.12,
+        "min_take_profit_distance": 0.015,
+        "max_take_profit_distance": 0.25,
+        "intrabar_policy": "stop_first",
+        "allocation_policy": "pro_rata",
+        "end_of_data_policy": "mark_to_market",
+    }
+    payload["risk_per_trade"] = 0.0
+
+    with pytest.raises(ValueError, match="risk_per_trade"):
+        AccountConfig.from_dict(payload)
 
 
 def test_reproducibility_same_inputs_same_outputs_except_run_id():
@@ -263,7 +385,7 @@ def test_reproducibility_same_inputs_same_outputs_except_run_id():
         data, pd.DataFrame([entry_signal(risk=0.02)]), config, "run-b", "edge_a", "1h"
     )
 
-    for left, right in zip(result_a, result_b):
+    for left, right in zip(result_a, result_b, strict=True):
         left_cmp = left.drop(columns=["run_id"], errors="ignore").reset_index(drop=True)
         right_cmp = right.drop(columns=["run_id"], errors="ignore").reset_index(drop=True)
         pd.testing.assert_frame_equal(left_cmp, right_cmp)

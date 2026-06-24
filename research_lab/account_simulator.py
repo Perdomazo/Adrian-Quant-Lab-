@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,8 @@ import pandas as pd
 from research_lab.warehouse import feature_path, refresh_duckdb, write_parquet_atomic
 
 
-ACCOUNT_SIMULATOR_VERSION = "account-sim-v1"
+ACCOUNT_SIMULATOR_VERSION = "account-sim-v2"
+MAX_FINITE_PROFIT_FACTOR = 999.0
 
 
 @dataclass(frozen=True)
@@ -41,8 +43,73 @@ class AccountConfig:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "AccountConfig":
+        required = set(cls.__dataclass_fields__)
+        allowed = required | {"version"}
+        missing = sorted(required - set(payload))
+        extra = sorted(set(payload) - allowed)
+        if missing:
+            raise ValueError(f"Missing account rule fields: {', '.join(missing)}")
+        if extra:
+            raise ValueError(f"Unknown account rule fields: {', '.join(extra)}")
         values = {field_name: payload[field_name] for field_name in cls.__dataclass_fields__}
-        return cls(**values)
+        config = cls(**values)
+        config.validate()
+        return config
+
+    def validate(self) -> None:
+        numeric_fields = [
+            "initial_cash",
+            "risk_per_trade",
+            "max_total_exposure",
+            "max_pair_exposure",
+            "min_stake",
+            "max_stake",
+            "fee",
+            "entry_slippage",
+            "exit_slippage",
+            "stop_slippage",
+            "stop_mult",
+            "take_profit_mult",
+            "min_stop_distance",
+            "max_stop_distance",
+            "min_take_profit_distance",
+            "max_take_profit_distance",
+        ]
+        for name in numeric_fields:
+            value = float(getattr(self, name))
+            if not np.isfinite(value):
+                raise ValueError(f"{name} must be finite")
+        if self.initial_cash <= 0:
+            raise ValueError("initial_cash must be positive")
+        if not 0 < self.risk_per_trade <= 1:
+            raise ValueError("risk_per_trade must be in (0, 1]")
+        if self.max_open_positions < 1:
+            raise ValueError("max_open_positions must be at least 1")
+        if not 0 < self.max_total_exposure <= 1:
+            raise ValueError("max_total_exposure must be in (0, 1]")
+        if not 0 < self.max_pair_exposure <= 1:
+            raise ValueError("max_pair_exposure must be in (0, 1]")
+        if self.max_pair_exposure > self.max_total_exposure:
+            raise ValueError("max_pair_exposure cannot exceed max_total_exposure")
+        if self.min_stake <= 0 or self.max_stake < self.min_stake:
+            raise ValueError("stake bounds are invalid")
+        if min(self.fee, self.entry_slippage, self.exit_slippage, self.stop_slippage) < 0:
+            raise ValueError("fees and slippage must be non-negative")
+        if self.min_stop_distance <= 0 or self.max_stop_distance < self.min_stop_distance:
+            raise ValueError("stop distance bounds are invalid")
+        if (
+            self.min_take_profit_distance <= 0
+            or self.max_take_profit_distance < self.min_take_profit_distance
+        ):
+            raise ValueError("take-profit distance bounds are invalid")
+        if self.stop_mult <= 0 or self.take_profit_mult <= 0:
+            raise ValueError("stop_mult and take_profit_mult must be positive")
+        if self.intrabar_policy != "stop_first":
+            raise ValueError("Only intrabar_policy=stop_first is supported")
+        if self.allocation_policy != "pro_rata":
+            raise ValueError("Only allocation_policy=pro_rata is supported")
+        if self.end_of_data_policy != "mark_to_market":
+            raise ValueError("Only end_of_data_policy=mark_to_market is supported")
 
 
 @dataclass
@@ -118,6 +185,20 @@ def position_key(edge: str, pair: str, timeframe: str) -> str:
     return f"{edge}|{pair}|{timeframe}"
 
 
+def pending_priority(pending: PendingEntry) -> str:
+    payload = "|".join(
+        [
+            pending.edge,
+            pending.timeframe,
+            pending.execute_date.isoformat(),
+            pending.signal_date.isoformat(),
+            pending.pair,
+            str(pending.signal_index),
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def prepare_features(features: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     prepared: dict[str, pd.DataFrame] = {}
     for pair, df in features.items():
@@ -181,7 +262,7 @@ def profit_factor_from_pnl(trades: pd.DataFrame) -> float:
     gross_profit = trades.loc[trades["pnl"] > 0, "pnl"].sum()
     gross_loss = -trades.loc[trades["pnl"] < 0, "pnl"].sum()
     if gross_loss == 0:
-        return float("inf") if gross_profit > 0 else 0.0
+        return MAX_FINITE_PROFIT_FACTOR if gross_profit > 0 else 0.0
     return float(gross_profit / gross_loss)
 
 
@@ -232,6 +313,25 @@ def pair_market_value(
     return float(value)
 
 
+def pair_market_values(
+    positions: dict[str, Position],
+    rows_by_pair: dict[str, dict[pd.Timestamp, Any]],
+    last_close: dict[str, float],
+    date: pd.Timestamp,
+    price_field: str = "close",
+) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for position in positions.values():
+        row = rows_by_pair.get(position.pair, {}).get(date)
+        price = (
+            getattr(row, price_field)
+            if row is not None
+            else last_close.get(position.pair, position.entry_price)
+        )
+        values[position.pair] = values.get(position.pair, 0.0) + position.quantity * float(price)
+    return values
+
+
 def record_rejection(
     rejections: list[dict[str, Any]],
     pending: PendingEntry,
@@ -250,7 +350,7 @@ def record_rejection(
             "signal_date": pending.signal_date,
             "execution_date": date or pending.execute_date,
             "reason": reason,
-            "desired_stake": float(desired_stake) if np.isfinite(desired_stake) else np.nan,
+            "desired_stake": float(desired_stake) if np.isfinite(desired_stake) else 0.0,
             "available_cash": float(state.cash),
             "current_exposure": float(current_exposure),
             "open_positions": int(len(state.positions)),
@@ -260,7 +360,7 @@ def record_rejection(
 
 def close_position_with_config(
     state: AccountState,
-    position_id: str,
+    position_slot: str,
     exit_date: pd.Timestamp,
     exit_price: float,
     exit_reason: str,
@@ -268,7 +368,7 @@ def close_position_with_config(
     run_id: str,
     config: AccountConfig,
 ) -> None:
-    position = state.positions.pop(position_id)
+    position = state.positions.pop(position_slot)
     gross_proceeds = position.quantity * exit_price
     exit_fee = gross_proceeds * config.fee
     net_proceeds = gross_proceeds - exit_fee
@@ -278,6 +378,7 @@ def close_position_with_config(
     state.fees_paid += exit_fee
     trades.append(
         {
+            "trade_id": position.position_id,
             "position_id": position.position_id,
             "run_id": run_id,
             "edge": position.edge,
@@ -388,6 +489,7 @@ def simulate_account(
     last_close: dict[str, float] = {}
     entries_opened = 0
     max_concurrent_positions = 0
+    next_position_id = 1
 
     entry_signals = (
         signals[signals.get("signal_type", "") == "entry"] if not signals.empty else pd.DataFrame()
@@ -402,7 +504,7 @@ def simulate_account(
         }
 
         due_exit_ids = [
-            pid for pid, (execute_date, _) in pending_exits.items() if execute_date == date
+            pid for pid, (execute_date, _) in pending_exits.items() if execute_date <= date
         ]
         for position_id in sorted(due_exit_ids):
             if position_id not in state.positions:
@@ -411,6 +513,12 @@ def simulate_account(
             position = state.positions[position_id]
             row = current_rows.get(position.pair)
             if row is None:
+                _, exit_reason = pending_exits[position_id]
+                next_date = next_bar_date(features, position.pair, date)
+                if next_date is not None:
+                    pending_exits[position_id] = (next_date, exit_reason)
+                else:
+                    pending_exits.pop(position_id, None)
                 continue
             _, exit_reason = pending_exits[position_id]
             exit_price = float(row.open) * (1.0 - config.exit_slippage)
@@ -420,45 +528,83 @@ def simulate_account(
             pending_exits.pop(position_id, None)
 
         due_entries = [
-            pending for pending in pending_entries.values() if pending.execute_date == date
+            pending
+            for pending in pending_entries.values()
+            if pending.execute_date <= date
         ]
         candidates: list[tuple[PendingEntry, float, dict[str, float], Any]] = []
         current_exposure = market_value(state.positions, rows_by_pair, last_close, date, "open")
-        slots = config.max_open_positions - len(state.positions)
-        if due_entries and slots <= 0:
-            for pending in due_entries:
+        for pending in sorted(due_entries, key=pending_priority):
+            row = current_rows.get(pending.pair)
+            if row is None:
+                next_date = next_bar_date(features, pending.pair, date)
+                if next_date is not None:
+                    pending_entries[pending.pair] = PendingEntry(
+                        edge=pending.edge,
+                        edge_version=pending.edge_version,
+                        pair=pending.pair,
+                        timeframe=pending.timeframe,
+                        signal_date=pending.signal_date,
+                        execute_date=next_date,
+                        signal_index=pending.signal_index,
+                        risk=pending.risk,
+                        max_hold=pending.max_hold,
+                    )
+                    continue
                 record_rejection(
-                    rejections, pending, "max_positions", 0.0, state, current_exposure, date
+                    rejections, pending, "no_next_bar", 0.0, state, current_exposure, date
                 )
                 pending_entries.pop(pending.pair, None)
-        elif due_entries and len(due_entries) > slots:
-            for pending in due_entries:
+                continue
+            if position_key(pending.edge, pending.pair, pending.timeframe) in state.positions:
                 record_rejection(
-                    rejections, pending, "max_positions", 0.0, state, current_exposure, date
+                    rejections, pending, "already_open", 0.0, state, current_exposure, date
                 )
                 pending_entries.pop(pending.pair, None)
-        else:
-            for pending in due_entries:
-                row = current_rows.get(pending.pair)
-                if row is None:
-                    continue
-                if position_key(pending.edge, pending.pair, pending.timeframe) in state.positions:
-                    record_rejection(
-                        rejections, pending, "already_open", 0.0, state, current_exposure, date
-                    )
-                    pending_entries.pop(pending.pair, None)
-                    continue
-                desired_stake, details, reason = desired_entry(
-                    pending, row, state, rows_by_pair, last_close, date, config
+                continue
+            desired_stake, details, reason = desired_entry(
+                pending, row, state, rows_by_pair, last_close, date, config
+            )
+            if reason:
+                record_rejection(
+                    rejections, pending, reason, desired_stake, state, current_exposure, date
                 )
-                if reason:
-                    record_rejection(
-                        rejections, pending, reason, desired_stake, state, current_exposure, date
-                    )
-                    pending_entries.pop(pending.pair, None)
-                    continue
-                candidates.append((pending, desired_stake, details, row))
+                pending_entries.pop(pending.pair, None)
+                continue
+            candidates.append((pending, desired_stake, details, row))
 
+        if candidates:
+            slots = config.max_open_positions - len(state.positions)
+            if slots <= 0:
+                for pending, desired_stake, _, _ in candidates:
+                    record_rejection(
+                        rejections,
+                        pending,
+                        "max_positions",
+                        desired_stake,
+                        state,
+                        current_exposure,
+                        date,
+                    )
+                    pending_entries.pop(pending.pair, None)
+                candidates = []
+            elif len(candidates) > slots:
+                candidates = sorted(candidates, key=lambda item: pending_priority(item[0]))
+                rejected = candidates[slots:]
+                candidates = candidates[:slots]
+                for pending, desired_stake, _, _ in rejected:
+                    record_rejection(
+                        rejections,
+                        pending,
+                        "max_positions",
+                        desired_stake,
+                        state,
+                        current_exposure,
+                        date,
+                    )
+                    pending_entries.pop(pending.pair, None)
+
+        if candidates:
             total_desired = sum(item[1] for item in candidates)
             current_exposure = market_value(state.positions, rows_by_pair, last_close, date, "open")
             equity = state.cash + current_exposure
@@ -487,20 +633,22 @@ def simulate_account(
                 quantity = stake / entry_price
                 stop_price = entry_price * (1.0 - details["stop_distance"])
                 take_profit_price = entry_price * (1.0 + details["take_profit_distance"])
-                position_id = position_key(pending.edge, pending.pair, pending.timeframe)
+                position_slot = position_key(pending.edge, pending.pair, pending.timeframe)
+                unique_position_id = f"{position_slot}|{next_position_id:06d}"
+                next_position_id += 1
                 state.cash -= stake + entry_fee
                 if state.cash < -0.000001:
                     raise RuntimeError("cash became negative after entry")
                 state.fees_paid += entry_fee
-                state.positions[position_id] = Position(
-                    position_id=position_id,
+                state.positions[position_slot] = Position(
+                    position_id=unique_position_id,
                     edge=pending.edge,
                     edge_version=pending.edge_version,
                     pair=pending.pair,
                     timeframe=pending.timeframe,
                     signal_date=pending.signal_date,
                     entry_date=date,
-                    entry_index=int(getattr(row, "bar_index")),
+                    entry_index=int(row.bar_index),
                     quantity=quantity,
                     stake=stake,
                     entry_price=entry_price,
@@ -548,9 +696,15 @@ def simulate_account(
 
         current_signals = signals_by_date.get(date)
         if current_signals is not None:
-            for signal in current_signals.itertuples(index=False):
-                signal_type = getattr(signal, "signal_type")
-                pair = getattr(signal, "pair")
+            signal_rows = list(current_signals.itertuples(index=False))
+            exit_pairs = {signal.pair for signal in signal_rows if signal.signal_type == "exit"}
+            signal_rows = sorted(
+                signal_rows,
+                key=lambda signal: (0 if signal.signal_type == "exit" else 1, signal.pair),
+            )
+            for signal in signal_rows:
+                signal_type = signal.signal_type
+                pair = signal.pair
                 key = position_key(edge, pair, timeframe)
                 if signal_type == "exit":
                     if key in state.positions and key not in pending_exits:
@@ -569,11 +723,22 @@ def simulate_account(
                     execute_date=date,
                     signal_index=int(getattr(signal, "signal_index", -1)),
                     risk=float(getattr(signal, "composite_vol_at_signal", np.nan)),
-                    max_hold=int(getattr(signal, "max_hold")),
+                    max_hold=int(signal.max_hold),
                 )
                 current_exposure = market_value(
                     state.positions, rows_by_pair, last_close, date, "close"
                 )
+                if pair in exit_pairs:
+                    record_rejection(
+                        rejections,
+                        pending_stub,
+                        "exit_priority",
+                        0.0,
+                        state,
+                        current_exposure,
+                        date,
+                    )
+                    continue
                 if key in state.positions or pair in pending_entries:
                     record_rejection(
                         rejections, pending_stub, "already_open", 0.0, state, current_exposure, date
@@ -606,7 +771,7 @@ def simulate_account(
                     execute_date=execute_date,
                     signal_index=int(getattr(signal, "signal_index", -1)),
                     risk=risk,
-                    max_hold=int(getattr(signal, "max_hold")),
+                    max_hold=int(signal.max_hold),
                 )
 
         for pair, row in current_rows.items():
@@ -621,6 +786,11 @@ def simulate_account(
             for position in state.positions.values()
         )
         exposure = mv / equity if equity > 0 else 0.0
+        pair_values = pair_market_values(state.positions, rows_by_pair, last_close, date, "close")
+        pair_exposures = {
+            pair: (value / equity if equity > 0 else 0.0) for pair, value in pair_values.items()
+        }
+        max_pair_exposure = max(pair_exposures.values(), default=0.0)
         equity_rows.append(
             {
                 "run_id": run_id,
@@ -634,6 +804,8 @@ def simulate_account(
                 "unrealized_pnl": unrealized_pnl,
                 "fees_paid": state.fees_paid,
                 "exposure": exposure,
+                "max_pair_exposure": max_pair_exposure,
+                "pair_exposures": json.dumps(pair_exposures, sort_keys=True),
                 "open_positions": len(state.positions),
             }
         )
@@ -657,6 +829,8 @@ def simulate_account(
                     "unrealized_pnl": 0.0,
                     "fees_paid": 0.0,
                     "exposure": 0.0,
+                    "max_pair_exposure": 0.0,
+                    "pair_exposures": "{}",
                     "open_positions": 0,
                     "drawdown": 0.0,
                 }
@@ -681,12 +855,15 @@ def simulate_account(
         "final_equity": final_equity,
         "total_return": total_return,
         "trades": int(len(closed)),
-        "win_rate": float(wins / len(closed)) if len(closed) else np.nan,
+        "win_rate": float(wins / len(closed)) if len(closed) else 0.0,
         "profit_factor": profit_factor_from_pnl(closed),
         "max_drawdown": max_dd,
         "drawdown_duration": dd_duration,
         "fees_paid": state.fees_paid,
         "max_exposure": float(equity_df["exposure"].max()) if not equity_df.empty else 0.0,
+        "max_pair_exposure": (
+            float(equity_df["max_pair_exposure"].max()) if not equity_df.empty else 0.0
+        ),
         "average_exposure": float(equity_df["exposure"].mean()) if not equity_df.empty else 0.0,
         "max_concurrent_positions": int(
             max(max_concurrent_positions, equity_df["open_positions"].max())

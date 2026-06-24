@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Adrian Quant Lab daily ingest
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=120
+Unit=adrian-quant-ingest.service
+
+[Install]
+WantedBy=timers.target
