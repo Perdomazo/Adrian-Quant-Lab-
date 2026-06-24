@@ -794,3 +794,38 @@ Nota:
 
 - `systemd-analyze verify` no fue concluyente en el entorno local por permisos
   (`Operation not permitted`), no por un error especifico de unit.
+
+### Publicacion y despliegue remoto
+
+GitHub:
+
+```text
+commit: 4f7f247a1 Split ingest and research pipelines
+remote: adrian/develop
+push: correcto
+```
+
+Homeserver:
+
+- Se creo `/tmp/adrian_quant_lab_architecture.tgz` excluyendo storage, auditoria y caches.
+- `scp /tmp/adrian_quant_lab_architecture.tgz adrian@homeserver:/tmp/` termino correctamente.
+- Antes del cambio, `adrian-quant-pipeline.timer` estaba activo y los timers nuevos estaban inactivos.
+- Durante el intento remoto se ejecuto `systemctl disable --now adrian-quant-pipeline.timer adrian-quant-promotion.timer`.
+- Una comprobacion posterior alcanzo a confirmar:
+
+```text
+adrian-quant-pipeline.service: inactive
+adrian-quant-pipeline.timer: inactive
+```
+
+Bloqueo:
+
+- La verificacion final remota no pudo completarse porque el cliente SSH local empezo a fallar con:
+
+```text
+Bad owner or permissions on /etc/ssh/ssh_config.d/20-systemd-ssh-proxy.conf
+```
+
+- `tailscale status` local tambien fallo porque `tailscaled` no estaba activo.
+- No se debe asumir todavia que `adrian-quant-ingest.timer` y `adrian-quant-research.timer`
+  quedaron habilitados; queda pendiente confirmar desde una sesion SSH funcional.
