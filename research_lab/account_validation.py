@@ -77,6 +77,22 @@ def exposure_column(equity: pd.DataFrame, preferred: str, fallback: str) -> pd.S
     return equity[fallback].astype(float)
 
 
+def exposure_violations_for_limit(
+    equity: pd.DataFrame,
+    preferred: str,
+    secondary: str,
+    fallback: str,
+    limit: float,
+) -> int:
+    if preferred in equity.columns:
+        values = equity[preferred].astype(float)
+    elif secondary in equity.columns:
+        values = equity[secondary].astype(float)
+    else:
+        values = equity[fallback].astype(float)
+    return int((values > limit + TOLERANCE).sum())
+
+
 def validate_account_outputs(
     storage: Path,
     rules_path: Path,
@@ -114,6 +130,8 @@ def validate_account_outputs(
         negative_cash_rows = 1
         exposure_violations = 1
         pair_exposure_violations = 1
+        stake_exposure_drift_rows = 1
+        pair_stake_exposure_drift_rows = 1
         position_limit_violations = 1
     else:
         equity_identity_failures = int(
@@ -127,21 +145,47 @@ def validate_account_outputs(
             ).sum()
         )
         negative_cash_rows = int((equity["cash"].astype(float) < -TOLERANCE).sum())
-        exposure_violations = int(
-            (
-                exposure_column(equity, "stake_exposure", "exposure")
-                > config.max_total_exposure + TOLERANCE
-            ).sum()
+        exposure_violations = exposure_violations_for_limit(
+            equity,
+            "max_entry_stake_exposure",
+            "stake_exposure",
+            "exposure",
+            config.max_total_exposure,
         )
-        if "max_pair_stake_exposure" in equity.columns or "max_pair_exposure" in equity.columns:
-            pair_exposure_violations = int(
+        if (
+            "max_entry_pair_stake_exposure" in equity.columns
+            or "max_pair_stake_exposure" in equity.columns
+            or "max_pair_exposure" in equity.columns
+        ):
+            pair_exposure_violations = exposure_violations_for_limit(
+                equity,
+                "max_entry_pair_stake_exposure",
+                "max_pair_stake_exposure",
+                "max_pair_exposure",
+                config.max_pair_exposure,
+            )
+        else:
+            pair_exposure_violations = len(equity)
+        stake_exposure_drift_rows = (
+            int(
+                (
+                    exposure_column(equity, "stake_exposure", "exposure")
+                    > config.max_total_exposure + TOLERANCE
+                ).sum()
+            )
+            if "stake_exposure" in equity.columns or "exposure" in equity.columns
+            else 0
+        )
+        pair_stake_exposure_drift_rows = (
+            int(
                 (
                     exposure_column(equity, "max_pair_stake_exposure", "max_pair_exposure")
                     > config.max_pair_exposure + TOLERANCE
                 ).sum()
             )
-        else:
-            pair_exposure_violations = len(equity)
+            if "max_pair_stake_exposure" in equity.columns or "max_pair_exposure" in equity.columns
+            else 0
+        )
         position_limit_violations = int(
             (equity["open_positions"].astype(int) > config.max_open_positions).sum()
         )
@@ -170,6 +214,8 @@ def validate_account_outputs(
         "equity_identity_failures": equity_identity_failures,
         "exposure_violations": exposure_violations,
         "pair_exposure_violations": pair_exposure_violations,
+        "stake_exposure_drift_rows": stake_exposure_drift_rows,
+        "pair_stake_exposure_drift_rows": pair_stake_exposure_drift_rows,
         "position_limit_violations": position_limit_violations,
         "invalid_trade_dates": invalid_trade_dates(trades),
         "duplicate_trade_ids": duplicate_trade_ids(trades),

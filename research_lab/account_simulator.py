@@ -131,6 +131,8 @@ class Position:
     stop_distance: float
     take_profit_distance: float
     max_hold: int
+    entry_stake_exposure: float
+    entry_pair_stake_exposure: float
     bars_held: int = 0
 
 
@@ -417,6 +419,8 @@ def close_position_with_config(
             "fees_total": position.entry_fee + exit_fee,
             "stop_price": position.stop_price,
             "take_profit_price": position.take_profit_price,
+            "entry_stake_exposure": position.entry_stake_exposure,
+            "entry_pair_stake_exposure": position.entry_pair_stake_exposure,
             "bars_held": position.bars_held,
             "exit_reason": exit_reason,
             "pnl": pnl,
@@ -668,6 +672,15 @@ def simulate_account(  # noqa: C901
                 quantity = stake / entry_price
                 stop_price = entry_price * (1.0 - details["stop_distance"])
                 take_profit_price = entry_price * (1.0 + details["take_profit_distance"])
+                post_entry_capital = state.cash + total_stake(state.positions) - entry_fee
+                post_entry_stake = total_stake(state.positions) + stake
+                post_entry_pair_stake = pair_stake(pending.pair, state.positions) + stake
+                entry_stake_exposure = (
+                    post_entry_stake / post_entry_capital if post_entry_capital > 0 else 0.0
+                )
+                entry_pair_stake_exposure = (
+                    post_entry_pair_stake / post_entry_capital if post_entry_capital > 0 else 0.0
+                )
                 position_slot = position_key(pending.edge, pending.pair, pending.timeframe)
                 unique_position_id = f"{position_slot}|{next_position_id:06d}"
                 next_position_id += 1
@@ -693,6 +706,8 @@ def simulate_account(  # noqa: C901
                     stop_distance=details["stop_distance"],
                     take_profit_distance=details["take_profit_distance"],
                     max_hold=pending.max_hold,
+                    entry_stake_exposure=entry_stake_exposure,
+                    entry_pair_stake_exposure=entry_pair_stake_exposure,
                 )
                 entries_opened += 1
                 max_concurrent_positions = max(max_concurrent_positions, len(state.positions))
@@ -835,6 +850,13 @@ def simulate_account(  # noqa: C901
             for pair, value in pair_stakes.items()
         }
         max_pair_stake_exposure = max(pair_stake_exposures.values(), default=0.0)
+        max_entry_stake_exposure = max(
+            (position.entry_stake_exposure for position in state.positions.values()), default=0.0
+        )
+        max_entry_pair_stake_exposure = max(
+            (position.entry_pair_stake_exposure for position in state.positions.values()),
+            default=0.0,
+        )
         equity_rows.append(
             {
                 "run_id": run_id,
@@ -854,6 +876,8 @@ def simulate_account(  # noqa: C901
                 "stake_exposure": stake_exposure,
                 "max_pair_stake_exposure": max_pair_stake_exposure,
                 "pair_stake_exposures": json.dumps(pair_stake_exposures, sort_keys=True),
+                "max_entry_stake_exposure": max_entry_stake_exposure,
+                "max_entry_pair_stake_exposure": max_entry_pair_stake_exposure,
                 "open_positions": len(state.positions),
             }
         )
@@ -883,6 +907,8 @@ def simulate_account(  # noqa: C901
                     "stake_exposure": 0.0,
                     "max_pair_stake_exposure": 0.0,
                     "pair_stake_exposures": "{}",
+                    "max_entry_stake_exposure": 0.0,
+                    "max_entry_pair_stake_exposure": 0.0,
                     "open_positions": 0,
                     "drawdown": 0.0,
                 }
@@ -921,6 +947,12 @@ def simulate_account(  # noqa: C901
         ),
         "max_pair_stake_exposure": (
             float(equity_df["max_pair_stake_exposure"].max()) if not equity_df.empty else 0.0
+        ),
+        "max_entry_stake_exposure": (
+            float(equity_df["max_entry_stake_exposure"].max()) if not equity_df.empty else 0.0
+        ),
+        "max_entry_pair_stake_exposure": (
+            float(equity_df["max_entry_pair_stake_exposure"].max()) if not equity_df.empty else 0.0
         ),
         "average_exposure": float(equity_df["exposure"].mean()) if not equity_df.empty else 0.0,
         "max_concurrent_positions": int(
