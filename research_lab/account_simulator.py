@@ -337,6 +337,21 @@ def pair_stake_values(positions: dict[str, Position]) -> dict[str, float]:
     return values
 
 
+def total_stake(positions: dict[str, Position]) -> float:
+    return sum(position.stake for position in positions.values())
+
+
+def pair_stake(pair: str, positions: dict[str, Position]) -> float:
+    return sum(position.stake for position in positions.values() if position.pair == pair)
+
+
+def stake_capacity(capital: float, allocated: float, limit: float, fee: float) -> float:
+    numerator = limit * capital - allocated
+    if numerator <= 0:
+        return 0.0
+    return numerator / (1.0 + limit * fee)
+
+
 def record_rejection(
     rejections: list[dict[str, Any]],
     pending: PendingEntry,
@@ -434,13 +449,24 @@ def desired_entry(
         )
     )
     current_exposure = market_value(state.positions, rows_by_pair, last_close, date, "open")
-    pair_exposure = pair_market_value(pending.pair, state.positions, rows_by_pair, last_close, date)
     equity = state.cash + current_exposure
+    allocated_stake = total_stake(state.positions)
+    allocation_capital = state.cash + allocated_stake
     if equity <= 0:
         return 0.0, {}, "insufficient_cash"
 
-    total_capacity = equity * config.max_total_exposure - current_exposure
-    pair_capacity = equity * config.max_pair_exposure - pair_exposure
+    total_capacity = stake_capacity(
+        allocation_capital,
+        allocated_stake,
+        config.max_total_exposure,
+        config.fee,
+    )
+    pair_capacity = stake_capacity(
+        allocation_capital,
+        pair_stake(pending.pair, state.positions),
+        config.max_pair_exposure,
+        config.fee,
+    )
     cash_capacity = state.cash / (1.0 + config.fee)
     if total_capacity <= 0:
         return 0.0, {}, "max_total_exposure"
@@ -609,11 +635,17 @@ def simulate_account(  # noqa: C901
 
         if candidates:
             total_desired = sum(item[1] for item in candidates)
-            current_exposure = market_value(state.positions, rows_by_pair, last_close, date, "open")
-            equity = state.cash + current_exposure
+            allocated_stake = total_stake(state.positions)
+            allocation_capital = state.cash + allocated_stake
+            total_capacity = stake_capacity(
+                allocation_capital,
+                allocated_stake,
+                config.max_total_exposure,
+                config.fee,
+            )
             available = min(
                 state.cash / (1.0 + config.fee),
-                max(equity * config.max_total_exposure - current_exposure, 0.0),
+                total_capacity,
             )
             factor = min(1.0, available / total_desired) if total_desired > 0 else 0.0
 
@@ -794,7 +826,7 @@ def simulate_account(  # noqa: C901
             pair: (value / equity if equity > 0 else 0.0) for pair, value in pair_values.items()
         }
         max_pair_exposure = max(pair_exposures.values(), default=0.0)
-        allocated_stake = sum(position.stake for position in state.positions.values())
+        allocated_stake = total_stake(state.positions)
         allocated_capital = state.cash + allocated_stake
         stake_exposure = allocated_stake / allocated_capital if allocated_capital > 0 else 0.0
         pair_stakes = pair_stake_values(state.positions)
