@@ -279,8 +279,8 @@ def test_global_exposure_limit_is_never_exceeded():
     )
     _, equity, summary, _ = run_sim(data, signals, config)
 
-    assert equity["exposure"].max() <= 0.25 + 1e-9
-    assert summary.iloc[0]["max_exposure"] <= 0.25 + 1e-9
+    assert equity["stake_exposure"].max() <= 0.25 + 1e-9
+    assert summary.iloc[0]["max_stake_exposure"] <= 0.25 + 1e-9
 
 
 def test_pair_exposure_limit_is_never_exceeded():
@@ -294,8 +294,8 @@ def test_pair_exposure_limit_is_never_exceeded():
     )
     _, equity, summary, _ = run_sim(features(), [entry_signal(risk=0.01)], config)
 
-    assert equity["max_pair_exposure"].max() <= 0.10 + 1e-9
-    assert summary.iloc[0]["max_pair_exposure"] <= 0.10 + 1e-9
+    assert equity["max_pair_stake_exposure"].max() <= 0.10 + 1e-9
+    assert summary.iloc[0]["max_pair_stake_exposure"] <= 0.10 + 1e-9
 
 
 def test_insufficient_capital_never_makes_cash_negative():

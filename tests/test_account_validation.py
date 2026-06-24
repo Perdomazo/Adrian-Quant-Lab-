@@ -95,7 +95,7 @@ def test_account_validation_detects_exposure_violation(tmp_path):
     rules = tmp_path / "account_rules.json"
     write_rules(rules)
     trades, equity, summary, rejections = valid_outputs()
-    equity.loc[equity.index[-1], "exposure"] = 0.90
+    equity.loc[equity.index[-1], "stake_exposure"] = 0.90
     write_outputs(tmp_path, trades, equity, summary, rejections)
 
     report = validate_account_outputs(tmp_path, rules, "run-a")

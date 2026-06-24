@@ -42,7 +42,7 @@ class AccountConfig:
     end_of_data_policy: str
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "AccountConfig":
+    def from_dict(cls, payload: dict[str, Any]) -> AccountConfig:
         required = set(cls.__dataclass_fields__)
         allowed = required | {"version"}
         missing = sorted(required - set(payload))
@@ -56,7 +56,7 @@ class AccountConfig:
         config.validate()
         return config
 
-    def validate(self) -> None:
+    def validate(self) -> None:  # noqa: C901
         numeric_fields = [
             "initial_cash",
             "risk_per_trade",
@@ -306,9 +306,7 @@ def pair_market_value(
         if position.pair != pair:
             continue
         row = rows_by_pair.get(pair, {}).get(date)
-        price = (
-            getattr(row, "open") if row is not None else last_close.get(pair, position.entry_price)
-        )
+        price = row.open if row is not None else last_close.get(pair, position.entry_price)
         value += position.quantity * float(price)
     return float(value)
 
@@ -329,6 +327,13 @@ def pair_market_values(
             else last_close.get(position.pair, position.entry_price)
         )
         values[position.pair] = values.get(position.pair, 0.0) + position.quantity * float(price)
+    return values
+
+
+def pair_stake_values(positions: dict[str, Position]) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for position in positions.values():
+        values[position.pair] = values.get(position.pair, 0.0) + position.stake
     return values
 
 
@@ -353,7 +358,7 @@ def record_rejection(
             "desired_stake": float(desired_stake) if np.isfinite(desired_stake) else 0.0,
             "available_cash": float(state.cash),
             "current_exposure": float(current_exposure),
-            "open_positions": int(len(state.positions)),
+            "open_positions": len(state.positions),
         }
     )
 
@@ -463,7 +468,7 @@ def desired_entry(
     )
 
 
-def simulate_account(
+def simulate_account(  # noqa: C901
     features: dict[str, pd.DataFrame],
     signals: pd.DataFrame,
     config: AccountConfig,
@@ -528,9 +533,7 @@ def simulate_account(
             pending_exits.pop(position_id, None)
 
         due_entries = [
-            pending
-            for pending in pending_entries.values()
-            if pending.execute_date <= date
+            pending for pending in pending_entries.values() if pending.execute_date <= date
         ]
         candidates: list[tuple[PendingEntry, float, dict[str, float], Any]] = []
         current_exposure = market_value(state.positions, rows_by_pair, last_close, date, "open")
@@ -791,6 +794,15 @@ def simulate_account(
             pair: (value / equity if equity > 0 else 0.0) for pair, value in pair_values.items()
         }
         max_pair_exposure = max(pair_exposures.values(), default=0.0)
+        allocated_stake = sum(position.stake for position in state.positions.values())
+        allocated_capital = state.cash + allocated_stake
+        stake_exposure = allocated_stake / allocated_capital if allocated_capital > 0 else 0.0
+        pair_stakes = pair_stake_values(state.positions)
+        pair_stake_exposures = {
+            pair: (value / allocated_capital if allocated_capital > 0 else 0.0)
+            for pair, value in pair_stakes.items()
+        }
+        max_pair_stake_exposure = max(pair_stake_exposures.values(), default=0.0)
         equity_rows.append(
             {
                 "run_id": run_id,
@@ -806,6 +818,10 @@ def simulate_account(
                 "exposure": exposure,
                 "max_pair_exposure": max_pair_exposure,
                 "pair_exposures": json.dumps(pair_exposures, sort_keys=True),
+                "allocated_stake": allocated_stake,
+                "stake_exposure": stake_exposure,
+                "max_pair_stake_exposure": max_pair_stake_exposure,
+                "pair_stake_exposures": json.dumps(pair_stake_exposures, sort_keys=True),
                 "open_positions": len(state.positions),
             }
         )
@@ -831,6 +847,10 @@ def simulate_account(
                     "exposure": 0.0,
                     "max_pair_exposure": 0.0,
                     "pair_exposures": "{}",
+                    "allocated_stake": 0.0,
+                    "stake_exposure": 0.0,
+                    "max_pair_stake_exposure": 0.0,
+                    "pair_stake_exposures": "{}",
                     "open_positions": 0,
                     "drawdown": 0.0,
                 }
@@ -854,7 +874,7 @@ def simulate_account(
         "initial_cash": config.initial_cash,
         "final_equity": final_equity,
         "total_return": total_return,
-        "trades": int(len(closed)),
+        "trades": len(closed),
         "win_rate": float(wins / len(closed)) if len(closed) else 0.0,
         "profit_factor": profit_factor_from_pnl(closed),
         "max_drawdown": max_dd,
@@ -864,14 +884,20 @@ def simulate_account(
         "max_pair_exposure": (
             float(equity_df["max_pair_exposure"].max()) if not equity_df.empty else 0.0
         ),
+        "max_stake_exposure": (
+            float(equity_df["stake_exposure"].max()) if not equity_df.empty else 0.0
+        ),
+        "max_pair_stake_exposure": (
+            float(equity_df["max_pair_stake_exposure"].max()) if not equity_df.empty else 0.0
+        ),
         "average_exposure": float(equity_df["exposure"].mean()) if not equity_df.empty else 0.0,
         "max_concurrent_positions": int(
             max(max_concurrent_positions, equity_df["open_positions"].max())
         ),
-        "signals_seen": int(len(entry_signals)),
+        "signals_seen": len(entry_signals),
         "entries_opened": int(entries_opened),
-        "signals_rejected": int(len(rejections_df)),
-        "open_positions_end": int(len(state.positions)),
+        "signals_rejected": len(rejections_df),
+        "open_positions_end": len(state.positions),
         "account_simulator_version": ACCOUNT_SIMULATOR_VERSION,
     }
     return trades_df, equity_df, pd.DataFrame([summary]), rejections_df

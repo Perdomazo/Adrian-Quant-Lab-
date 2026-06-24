@@ -71,6 +71,12 @@ def duplicate_trade_ids(trades: pd.DataFrame) -> int:
     return int(trades[id_column].duplicated().sum())
 
 
+def exposure_column(equity: pd.DataFrame, preferred: str, fallback: str) -> pd.Series:
+    if preferred in equity.columns:
+        return equity[preferred].astype(float)
+    return equity[fallback].astype(float)
+
+
 def validate_account_outputs(
     storage: Path,
     rules_path: Path,
@@ -112,19 +118,25 @@ def validate_account_outputs(
     else:
         equity_identity_failures = int(
             (
-                (equity["equity"].astype(float) - equity["cash"].astype(float) - equity["market_value"].astype(float))
-                .abs()
+                (
+                    equity["equity"].astype(float)
+                    - equity["cash"].astype(float)
+                    - equity["market_value"].astype(float)
+                ).abs()
                 > TOLERANCE
             ).sum()
         )
         negative_cash_rows = int((equity["cash"].astype(float) < -TOLERANCE).sum())
         exposure_violations = int(
-            (equity["exposure"].astype(float) > config.max_total_exposure + TOLERANCE).sum()
+            (
+                exposure_column(equity, "stake_exposure", "exposure")
+                > config.max_total_exposure + TOLERANCE
+            ).sum()
         )
-        if "max_pair_exposure" in equity.columns:
+        if "max_pair_stake_exposure" in equity.columns or "max_pair_exposure" in equity.columns:
             pair_exposure_violations = int(
                 (
-                    equity["max_pair_exposure"].astype(float)
+                    exposure_column(equity, "max_pair_stake_exposure", "max_pair_exposure")
                     > config.max_pair_exposure + TOLERANCE
                 ).sum()
             )
@@ -142,7 +154,9 @@ def validate_account_outputs(
             equity,
             ["run_id", "date", "cash", "market_value", "equity", "exposure", "open_positions"],
         ),
-        "account_summary": missing_columns(summary, ["run_id", "edge", "timeframe", "final_equity"]),
+        "account_summary": missing_columns(
+            summary, ["run_id", "edge", "timeframe", "final_equity"]
+        ),
     }
     missing_required_count = sum(len(value) for value in missing_required_columns.values())
 
@@ -163,10 +177,10 @@ def validate_account_outputs(
         "run_id_mismatch_rows": run_id_mismatch_rows,
         "missing_files": missing_files,
         "missing_required_columns": missing_required_columns,
-        "trades_checked": int(len(trades)),
-        "equity_rows_checked": int(len(equity)),
-        "summary_rows_checked": int(len(summary)),
-        "rejections_checked": int(len(rejections)),
+        "trades_checked": len(trades),
+        "equity_rows_checked": len(equity),
+        "summary_rows_checked": len(summary),
+        "rejections_checked": len(rejections),
     }
     failure_keys = [
         "negative_cash_rows",
