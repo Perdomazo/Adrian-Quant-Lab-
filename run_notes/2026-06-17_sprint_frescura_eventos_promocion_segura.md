@@ -1107,3 +1107,196 @@ scp /tmp/adrian_quant_lab_architecture.tgz /tmp/adrian_quant_lab_architecture.tg
 ```
 
 El despliegue remoto no queda cerrado en este punto.
+
+## Rollout remoto - avance real en homeserver - 2026-06-24
+
+Contexto:
+
+- Se corrigio acceso temporal usando Tailscale directo:
+
+```text
+ssh -F /dev/null adrian@100.104.72.97
+```
+
+- La ruta remota usada fue:
+
+```text
+/home/adrian/freqtrade
+```
+
+Despliegue base realizado:
+
+- Se genero respaldo remoto:
+
+```text
+/tmp/adrian_quant_backup_20260624T064528Z
+```
+
+- Se instalaron unidades systemd nuevas:
+
+```text
+adrian-quant-ingest.service
+adrian-quant-ingest.timer
+adrian-quant-research.service
+adrian-quant-research.timer
+adrian-quant-deep.service
+adrian-quant-deep.timer
+```
+
+- Se confirmo `RUN_PROMOTION=0` en research/deep/pipeline.
+- Se confirmo lock compartido:
+
+```text
+research_lab/storage/pipeline.lock
+```
+
+- Se desactivaron timers antiguos:
+
+```text
+adrian-quant-pipeline.timer: disabled/inactive
+adrian-quant-promotion.timer: disabled/inactive
+```
+
+Validacion remota de tests:
+
+- `.venv-lab` no tenia `pytest` ni `pytest-xdist`; se instalaron para poder validar.
+- Los tests del lab deben ejecutarse con `--noconftest` porque `tests/conftest.py` de Freqtrade
+  importa el paquete `freqtrade`, no instalado en `.venv-lab`.
+
+Resultado:
+
+```text
+python -m pytest -q --noconftest tests/test_account_simulator.py tests/test_account_validation.py tests/test_pipeline_modes.py
+21 passed
+```
+
+Ingest manual remoto:
+
+```text
+adrian-quant-ingest.service: success
+data_quality_status: passed
+files_checked: 10
+missing_candles: 0
+nonfinite_ohlcv: 0
+incomplete_rows: 0
+stale_pairs: []
+incomplete_pairs: []
+max_lag_bars: 0
+download_method: docker
+total_seconds: 32.0
+```
+
+Research manual remoto:
+
+- El research completo ejecuto correctamente hasta account simulator, pero fallo varias veces en
+  `account_validation`.
+- Esto fue util: el gate bloqueo la corrida en vez de publicar una investigacion parcialmente
+  invalida.
+
+Correcciones hechas durante el rollout:
+
+1. Commit `54de643f2` - `Validate account allocation exposure`
+
+- Se separo exposicion mark-to-market de exposicion por stake asignado.
+- `account_equity.parquet` agrega:
+
+```text
+allocated_stake
+stake_exposure
+max_pair_stake_exposure
+pair_stake_exposures
+```
+
+- `account_validation.py` usa exposicion por stake cuando existe.
+
+2. Commit `612c7a558` - `Cap account sizing by allocated stake`
+
+- El sizing de entrada dejo de usar `market_value/equity` para capacidad.
+- Ahora calcula capacidad con capital asignado:
+
+```text
+cash + allocated_stake
+```
+
+- Esto elimino `exposure_violations` totales.
+
+3. Commit `cc2ecd7db` - `Validate entry allocation exposure`
+
+- Cada posicion guarda:
+
+```text
+entry_stake_exposure
+entry_pair_stake_exposure
+```
+
+- El hard gate valida exposicion de entrada.
+- El drift posterior por PnL/fees queda como diagnostico:
+
+```text
+stake_exposure_drift_rows
+pair_stake_exposure_drift_rows
+```
+
+4. Commit `1482b6acd` - `Add conservative allocation capacity buffer`
+
+- Se agrego `ALLOCATION_CAPACITY_BUFFER = 0.999`.
+- Motivo: eliminar sobrepasos microscopicos por redondeo/pro-rata, por ejemplo
+  `max_entry_pair_stake_exposure=0.300134` contra limite `0.30`.
+
+Ultimo paquete desplegado:
+
+```text
+source_commit: 1482b6acd32aac75a2352b33dd579bf68196af6e
+package_sha256: 816b2c83941b4dca55c6a14be502c8b10991dc217b00b152eb9ecbfb942358cf
+```
+
+Estado de la ultima corrida manual:
+
+- Se inicio `adrian-quant-research.service` con el paquete `1482b6acd`.
+- Data quality paso:
+
+```text
+actual_last_available_candle: 2026-06-24T12:00:00+00:00
+expected_last_complete_candle: 2026-06-24T12:00:00+00:00
+max_lag_bars: 0
+files_checked: 10
+status: passed
+```
+
+- La corrida entro a `account_simulator`.
+- Durante esa corrida el homeserver dejo de responder por SSH/Tailscale:
+
+```text
+ssh: connect to host 100.104.72.97 port 22: Connection timed out
+```
+
+Estado operativo al cortar:
+
+- `ingest` queda validado manualmente.
+- `research` no queda confirmado como success porque se perdio conectividad antes de leer
+  `run_manifest.json` y `account_validation.json`.
+- No se activaron timers nuevos por no tener confirmacion de research success.
+- `deep` no se ejecuto manualmente; queda pendiente.
+- `RUN_PROMOTION=0` sigue siendo obligatorio.
+
+Pendiente inmediato cuando vuelva SSH:
+
+```text
+cd /home/adrian/freqtrade
+
+systemctl status adrian-quant-research.service --no-pager
+cat research_lab/storage/results/account_validation.json | .venv-lab/bin/python -m json.tool
+cat research_lab/storage/results/latest/run_manifest.json | .venv-lab/bin/python -m json.tool
+
+sudo systemctl enable --now adrian-quant-ingest.timer adrian-quant-research.timer
+systemctl list-timers --all | grep adrian
+```
+
+Solo activar timers si:
+
+```text
+run_manifest.status = success
+data_quality_status = passed
+account_validation_status = passed
+account_validation.status = passed
+```
