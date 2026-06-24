@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pandas as pd
 
+from research_lab.account_simulator import simulate_account
 from research_lab.deep_validation import run_deep_validation
 from research_lab.pipeline_metrics import update_metrics
 from tests.test_account_simulator import cfg, entry_signal, features
-from research_lab.account_simulator import simulate_account
 
 
 def test_pipeline_metrics_updates_manifest(tmp_path):
@@ -31,19 +31,20 @@ def test_deep_validation_writes_summary_and_manifest(tmp_path):
             ("2025-01-01 03:00:00+00:00", 100.0, 120.0, 99.0, 110.0),
         ]
     )
-    trades, _, _, _ = simulate_account(
-        data,
+    result = simulate_account(
         pd.DataFrame(
             [
                 entry_signal(risk=0.02),
                 entry_signal(date="2025-01-01 02:00:00+00:00", risk=0.02),
             ]
         ),
+        data,
         cfg(fee=0.0, entry_slippage=0.0, exit_slippage=0.0),
         "run-a",
         "edge_a",
         "1h",
     )
+    trades = result.trades
     trades.to_parquet(results / "account_trades.parquet")
 
     summary, manifest = run_deep_validation(

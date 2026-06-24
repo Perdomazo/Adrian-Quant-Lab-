@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,13 +27,19 @@ RUN_FILES = [
     "account_equity.parquet",
     "account_rejections.parquet",
     "account_validation.json",
+    "account_oos_summary.parquet",
+    "account_oos_trades.parquet",
+    "account_oos_equity.parquet",
+    "account_oos_rejections.parquet",
+    "account_oos_aggregate.parquet",
+    "account_oos_validation.json",
     "deep_validation_summary.parquet",
     "deep_validation_manifest.json",
 ]
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def short_git_commit(root: Path) -> str | None:
@@ -145,12 +151,12 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(tmp, path)
+    tmp.replace(path)
 
 
 def new_run_id(root: Path) -> str:
     commit = short_git_commit(root) or "nogit"
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"{stamp}-{commit}-{uuid.uuid4().hex[:6]}"
 
 
@@ -203,6 +209,11 @@ def base_manifest(root: Path, storage: Path, run_id: str, status: str) -> dict[s
         "pair_universe_hash": file_exists_hash(pair_universe),
         "account_simulator_version": "account-sim-v2",
         "account_validation_version": "account-validation-v1",
+        "account_oos_version": "account-oos-v1",
+        "account_oos_validation_version": "account-oos-validation-v1",
+        "train_months": int(os.environ.get("TRAIN_MONTHS", "18")),
+        "test_months": int(os.environ.get("TEST_MONTHS", "6")),
+        "step_months": int(os.environ.get("STEP_MONTHS", "6")),
         "random_seed": 17062026,
         "expected_last_complete_candle": dq.get("expected_last_complete_candle"),
         "actual_last_available_candle": dq.get("actual_last_available_candle"),
@@ -258,10 +269,19 @@ def update_run(
     payload["deployment_package_hash"] = text_file_value(deployment_hash)
     payload["account_simulator_version"] = "account-sim-v2"
     payload["account_validation_version"] = "account-validation-v1"
+    payload["account_oos_version"] = "account-oos-v1"
+    payload["account_oos_validation_version"] = "account-oos-validation-v1"
+    payload["train_months"] = int(os.environ.get("TRAIN_MONTHS", payload.get("train_months", 18)))
+    payload["test_months"] = int(os.environ.get("TEST_MONTHS", payload.get("test_months", 6)))
+    payload["step_months"] = int(os.environ.get("STEP_MONTHS", payload.get("step_months", 6)))
     account_validation = storage / "results" / "account_validation.json"
     if account_validation.exists():
         validation = json.loads(account_validation.read_text(encoding="utf-8"))
         payload["account_validation_status"] = validation.get("status")
+    account_oos_validation = storage / "results" / "account_oos_validation.json"
+    if account_oos_validation.exists():
+        validation = json.loads(account_oos_validation.read_text(encoding="utf-8"))
+        payload["account_oos_validation_status"] = validation.get("status")
 
     atomic_write_json(manifest_path(storage, run_id), payload)
     latest_dir = storage / "results" / "latest"
@@ -284,7 +304,7 @@ def snapshot_results(storage: Path, run_id: str) -> None:
             tmp = target_dir / f".{name}.tmp-{os.getpid()}"
             target = target_dir / name
             shutil.copy2(source, tmp)
-            os.replace(tmp, target)
+            tmp.replace(target)
 
 
 def main() -> None:

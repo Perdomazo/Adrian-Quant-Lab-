@@ -159,6 +159,14 @@ class PendingEntry:
     max_hold: int
 
 
+@dataclass
+class SimulationResult:
+    summary: dict[str, Any]
+    trades: pd.DataFrame
+    equity: pd.DataFrame
+    rejections: pd.DataFrame
+
+
 def load_account_config(path: Path) -> tuple[AccountConfig, str, str | None]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     return (
@@ -276,6 +284,30 @@ def normalize_signals(signals: pd.DataFrame) -> pd.DataFrame:
     out["signal_date"] = pd.to_datetime(out["signal_date"], utc=True)
     out = out.sort_values(["signal_date", "pair", "signal_type"]).reset_index(drop=True)
     return out
+
+
+def normalize_optional_timestamp(value: pd.Timestamp | str | None) -> pd.Timestamp | None:
+    if value is None:
+        return None
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
+def in_simulation_window(
+    date: pd.Timestamp,
+    start_date: pd.Timestamp | None,
+    end_date: pd.Timestamp | None,
+) -> bool:
+    timestamp = normalize_optional_timestamp(date)
+    if timestamp is None:
+        return False
+    if start_date is not None and timestamp < start_date:
+        return False
+    if end_date is not None and timestamp >= end_date:
+        return False
+    return True
 
 
 def market_value(
@@ -500,17 +532,29 @@ def desired_entry(
 
 
 def simulate_account(  # noqa: C901
-    features: dict[str, pd.DataFrame],
     signals: pd.DataFrame,
+    features_by_pair: dict[str, pd.DataFrame],
     config: AccountConfig,
     run_id: str,
     edge: str,
     timeframe: str,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    features = prepare_features(features)
+    start_date: pd.Timestamp | None = None,
+    end_date: pd.Timestamp | None = None,
+) -> SimulationResult:
+    start = normalize_optional_timestamp(start_date)
+    end = normalize_optional_timestamp(end_date)
+    features = prepare_features(features_by_pair)
     rows_by_pair = row_maps(features)
-    timeline = build_timeline(features)
+    timeline = [date for date in build_timeline(features) if in_simulation_window(date, start, end)]
     signals = normalize_signals(signals)
+    if not signals.empty and (start is not None or end is not None):
+        signal_dates = pd.to_datetime(signals["signal_date"], utc=True)
+        mask = pd.Series(True, index=signals.index)
+        if start is not None:
+            mask &= signal_dates >= start
+        if end is not None:
+            mask &= signal_dates < end
+        signals = signals[mask].copy().reset_index(drop=True)
     edge_version = (
         str(signals["edge_version"].dropna().iloc[0])
         if not signals.empty and "edge_version" in signals
@@ -551,7 +595,7 @@ def simulate_account(  # noqa: C901
             if row is None:
                 _, exit_reason = pending_exits[position_id]
                 next_date = next_bar_date(features, position.pair, date)
-                if next_date is not None:
+                if next_date is not None and in_simulation_window(next_date, start, end):
                     pending_exits[position_id] = (next_date, exit_reason)
                 else:
                     pending_exits.pop(position_id, None)
@@ -572,7 +616,7 @@ def simulate_account(  # noqa: C901
             row = current_rows.get(pending.pair)
             if row is None:
                 next_date = next_bar_date(features, pending.pair, date)
-                if next_date is not None:
+                if next_date is not None and in_simulation_window(next_date, start, end):
                     pending_entries[pending.pair] = PendingEntry(
                         edge=pending.edge,
                         edge_version=pending.edge_version,
@@ -742,7 +786,7 @@ def simulate_account(  # noqa: C901
             position.bars_held += 1
             if position.bars_held >= position.max_hold and position_id not in pending_exits:
                 next_date = next_bar_date(features, position.pair, date)
-                if next_date is not None:
+                if next_date is not None and in_simulation_window(next_date, start, end):
                     pending_exits[position_id] = (next_date, "max_hold")
 
         current_signals = signals_by_date.get(date)
@@ -760,7 +804,9 @@ def simulate_account(  # noqa: C901
                 if signal_type == "exit":
                     if key in state.positions and key not in pending_exits:
                         execute_date = next_bar_date(features, pair, date)
-                        if execute_date is not None:
+                        if execute_date is not None and in_simulation_window(
+                            execute_date, start, end
+                        ):
                             pending_exits[key] = (execute_date, "signal")
                     continue
                 if signal_type != "entry":
@@ -796,7 +842,7 @@ def simulate_account(  # noqa: C901
                     )
                     continue
                 execute_date = next_bar_date(features, pair, date)
-                if execute_date is None:
+                if execute_date is None or not in_simulation_window(execute_date, start, end):
                     record_rejection(
                         rejections, pending_stub, "no_next_bar", 0.0, state, current_exposure, date
                     )
@@ -965,13 +1011,18 @@ def simulate_account(  # noqa: C901
         "open_positions_end": len(state.positions),
         "account_simulator_version": ACCOUNT_SIMULATOR_VERSION,
     }
-    return trades_df, equity_df, pd.DataFrame([summary]), rejections_df
+    return SimulationResult(
+        summary=summary,
+        trades=trades_df,
+        equity=equity_df,
+        rejections=rejections_df,
+    )
 
 
 def empty_outputs(
     run_id: str, edge: str, timeframe: str, config: AccountConfig
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    return simulate_account({}, pd.DataFrame(), config, run_id, edge, timeframe)
+) -> SimulationResult:
+    return simulate_account(pd.DataFrame(), {}, config, run_id, edge, timeframe)
 
 
 def load_features(
@@ -1018,13 +1069,11 @@ def run_account_simulator(
         features = load_features(storage, exchange, pairs, timeframe)
         for edge in edges:
             edge_signals = tf_signals[tf_signals["edge"] == edge].copy()
-            trades, equity, summary, rejections = simulate_account(
-                features, edge_signals, config, run_id, edge, timeframe
-            )
-            all_trades.append(trades)
-            all_equity.append(equity)
-            all_summary.append(summary)
-            all_rejections.append(rejections)
+            result = simulate_account(edge_signals, features, config, run_id, edge, timeframe)
+            all_trades.append(result.trades)
+            all_equity.append(result.equity)
+            all_summary.append(pd.DataFrame([result.summary]))
+            all_rejections.append(result.rejections)
 
     trades_df = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
     equity_df = pd.concat(all_equity, ignore_index=True) if all_equity else pd.DataFrame()

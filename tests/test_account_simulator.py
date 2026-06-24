@@ -91,14 +91,15 @@ def exit_signal(pair: str = "BTC/USDT", date: str = "2025-01-01 01:00:00+00:00")
 
 
 def run_sim(feature_data, signal_rows, config=None):
-    return simulate_account(
-        feature_data,
+    result = simulate_account(
         pd.DataFrame(signal_rows),
+        feature_data,
         config or cfg(),
         "run-a",
         "edge_a",
         "1h",
     )
+    return result.trades, result.equity, pd.DataFrame([result.summary]), result.rejections
 
 
 def test_no_signals_keeps_initial_cash():
@@ -385,8 +386,14 @@ def test_reproducibility_same_inputs_same_outputs_except_run_id():
     )
     config = cfg(fee=0.001, entry_slippage=0.0, exit_slippage=0.0)
     result_a = run_sim(data, [entry_signal(risk=0.02)], config)
-    result_b = simulate_account(
-        data, pd.DataFrame([entry_signal(risk=0.02)]), config, "run-b", "edge_a", "1h"
+    result_b_raw = simulate_account(
+        pd.DataFrame([entry_signal(risk=0.02)]), data, config, "run-b", "edge_a", "1h"
+    )
+    result_b = (
+        result_b_raw.trades,
+        result_b_raw.equity,
+        pd.DataFrame([result_b_raw.summary]),
+        result_b_raw.rejections,
     )
 
     for left, right in zip(result_a, result_b, strict=True):

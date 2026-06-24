@@ -19,6 +19,10 @@ RUN_PROMOTION="${RUN_PROMOTION:-0}"
 PROMOTION_RULES="${PROMOTION_RULES:-research_lab/config/promotion_rules.json}"
 DECISION_RULES="${DECISION_RULES:-research_lab/config/decision_rules.json}"
 ACCOUNT_RULES="${ACCOUNT_RULES:-research_lab/config/account_rules.json}"
+PAIR_UNIVERSE="${PAIR_UNIVERSE:-research_lab/config/pair_universe.json}"
+TRAIN_MONTHS="${TRAIN_MONTHS:-18}"
+TEST_MONTHS="${TEST_MONTHS:-6}"
+STEP_MONTHS="${STEP_MONTHS:-6}"
 
 if [[ "$PIPELINE_MODE" == "ingest" ]]; then
   exec "$ROOT_DIR/research_lab/scripts/run_daily_ingest.sh" "$@"
@@ -200,6 +204,27 @@ python -m research_lab.account_validation \
   --run-id "$RUN_ID" \
   --fail-on-error
 stage_end account_validation
+
+stage_start
+python -m research_lab.account_oos \
+  --storage "$STORAGE_DIR" \
+  --exchange kucoin \
+  --pairs "$PAIRS" \
+  --timeframes "$TIMEFRAMES" \
+  --account-rules "$ACCOUNT_RULES" \
+  --pair-universe "$PAIR_UNIVERSE" \
+  --train-months "$TRAIN_MONTHS" \
+  --test-months "$TEST_MONTHS" \
+  --step-months "$STEP_MONTHS" \
+  --run-id "$RUN_ID"
+stage_end account_oos
+
+stage_start
+python -m research_lab.account_oos_validation \
+  --storage "$STORAGE_DIR" \
+  --run-id "$RUN_ID" \
+  --fail-on-error
+stage_end account_oos_validation
 
 stage_start
 python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" snapshot

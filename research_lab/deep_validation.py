@@ -5,7 +5,7 @@ import json
 import resource
 import shutil
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,7 @@ DEEP_VALIDATION_VERSION = "deep-validation-v1"
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def peak_memory_mb() -> float:
@@ -44,13 +44,18 @@ def profit_factor(values: np.ndarray) -> float:
     return float(wins / losses)
 
 
-def sample_blocks(values: np.ndarray, block_size: int, target_len: int, rng: np.random.Generator) -> np.ndarray:
+def sample_blocks(
+    values: np.ndarray, block_size: int, target_len: int, rng: np.random.Generator
+) -> np.ndarray:
     if len(values) <= block_size:
         return rng.choice(values, size=target_len, replace=True)
-    chunks = []
-    while sum(len(chunk) for chunk in chunks) < target_len:
+    chunks: list[np.ndarray] = []
+    sampled = 0
+    while sampled < target_len:
         start = int(rng.integers(0, len(values) - block_size + 1))
-        chunks.append(values[start : start + block_size])
+        chunk = values[start : start + block_size]
+        chunks.append(chunk)
+        sampled += len(chunk)
     return np.concatenate(chunks)[:target_len]
 
 
@@ -112,7 +117,7 @@ def validate_group(
     stake_returns = group["return_on_stake"].astype(float).to_numpy()
     equity = np.cumprod(1.0 + pnl_returns)
     row = {
-        "trades": int(len(group)),
+        "trades": len(group),
         "total_return": float(equity[-1] - 1.0) if len(equity) else 0.0,
         "profit_factor": profit_factor(group["pnl"].astype(float).to_numpy()),
         "max_drawdown": drawdown(equity),
@@ -166,7 +171,7 @@ def run_deep_validation(
     trades_path = results / "account_trades.parquet"
     if not trades_path.exists():
         summary = pd.DataFrame()
-        manifest = {
+        missing_manifest: dict[str, Any] = {
             "version": DEEP_VALIDATION_VERSION,
             "status": "failed",
             "run_id": run_id,
@@ -176,8 +181,8 @@ def run_deep_validation(
             "deep_validation_seconds": round(time.perf_counter() - started, 3),
             "peak_memory_mb": peak_memory_mb(),
         }
-        atomic_write_json(results / "deep_validation_manifest.json", manifest)
-        return summary, manifest
+        atomic_write_json(results / "deep_validation_manifest.json", missing_manifest)
+        return summary, missing_manifest
 
     trades = pd.read_parquet(trades_path)
     if run_id and "run_id" in trades.columns:
@@ -202,7 +207,7 @@ def run_deep_validation(
 
     summary = add_bh_fdr(pd.DataFrame(rows))
     write_parquet_atomic(summary, results / "deep_validation_summary.parquet")
-    manifest = {
+    manifest: dict[str, Any] = {
         "version": DEEP_VALIDATION_VERSION,
         "status": "passed" if not summary.empty and not missing else "failed",
         "run_id": run_id,
@@ -210,7 +215,7 @@ def run_deep_validation(
         "sims": sims,
         "block_size": block_size,
         "seed": seed,
-        "summary_rows": int(len(summary)),
+        "summary_rows": len(summary),
         "missing_columns": missing,
         "research_seconds": research_seconds,
         "deep_validation_seconds": round(time.perf_counter() - started, 3),
@@ -234,7 +239,11 @@ def run_deep_validation(
         ],
     }
     atomic_write_json(results / "deep_validation_manifest.json", manifest)
-    copy_to_run_dirs(storage, run_id, ["deep_validation_summary.parquet", "deep_validation_manifest.json"])
+    copy_to_run_dirs(
+        storage,
+        run_id,
+        ["deep_validation_summary.parquet", "deep_validation_manifest.json"],
+    )
     if (storage / "ohlcv_manifest.parquet").exists():
         refresh_duckdb(storage)
     return summary, manifest

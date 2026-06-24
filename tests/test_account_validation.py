@@ -52,14 +52,15 @@ def valid_outputs():
             ("2025-01-01 01:00:00+00:00", 100.0, 120.0, 99.0, 110.0),
         ]
     )
-    return simulate_account(
-        data,
+    result = simulate_account(
         pd.DataFrame([entry_signal(risk=0.02)]),
+        data,
         cfg(fee=0.001, entry_slippage=0.0, exit_slippage=0.0),
         "run-a",
         "edge_a",
         "1h",
     )
+    return result.trades, result.equity, pd.DataFrame([result.summary]), result.rejections
 
 
 def test_account_validation_passes_valid_outputs(tmp_path):

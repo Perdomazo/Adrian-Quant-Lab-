@@ -12,6 +12,9 @@ TRADES = STORAGE / "results" / "edge_trades.parquet"
 WALK_FORWARD = STORAGE / "results" / "walk_forward_summary.parquet"
 SEASON = STORAGE / "results" / "season_summary.parquet"
 RUN_HISTORY = STORAGE / "results" / "run_history.parquet"
+ACCOUNT_OOS_AGGREGATE = STORAGE / "results" / "account_oos_aggregate.parquet"
+ACCOUNT_OOS_SUMMARY = STORAGE / "results" / "account_oos_summary.parquet"
+ACCOUNT_OOS_EQUITY = STORAGE / "results" / "account_oos_equity.parquet"
 PROMOTION_DECISION = STORAGE / "results" / "promotion_decision.json"
 FEATURES_MANIFEST = STORAGE / "features_manifest.parquet"
 OHLCV_MANIFEST = STORAGE / "ohlcv_manifest.parquet"
@@ -106,6 +109,9 @@ trades = load_parquet(TRADES)
 wfo = load_parquet(WALK_FORWARD)
 season = load_parquet(SEASON)
 run_history = load_parquet(RUN_HISTORY)
+account_oos_aggregate = load_parquet(ACCOUNT_OOS_AGGREGATE)
+account_oos_summary = load_parquet(ACCOUNT_OOS_SUMMARY)
+account_oos_equity = load_parquet(ACCOUNT_OOS_EQUITY)
 promotion_decision = load_json_text(PROMOTION_DECISION)
 features_manifest = load_parquet(FEATURES_MANIFEST)
 ohlcv_manifest = load_parquet(OHLCV_MANIFEST)
@@ -143,7 +149,18 @@ metric_card(top4, "Mejor PF", num(best["profit_factor"]))
 metric_card(top5, "Mejor score", num(best.get("score")))
 metric_card(top6, "Total trades", f"{int(filtered['trades'].sum()):,}")
 
-tabs = st.tabs(["Overview", "Robustez", "Heatmap", "Walk-forward", "Liga", "Trades", "Warehouse"])
+tabs = st.tabs(
+    [
+        "Overview",
+        "Robustez",
+        "Heatmap",
+        "Walk-forward",
+        "Cuenta OOS",
+        "Liga",
+        "Trades",
+        "Warehouse",
+    ]
+)
 
 with tabs[0]:
     st.subheader("Ranking de edges")
@@ -238,7 +255,8 @@ with tabs[1]:
         },
     )
     st.caption(
-        "Walk-forward actual: temporal_oos_fixed_params. Mide estabilidad temporal con parámetros fijos; todavía no optimiza en train."
+        "Walk-forward actual: temporal_oos_fixed_params. Mide estabilidad temporal con "
+        "parámetros fijos; todavía no optimiza en train."
     )
 
 with tabs[2]:
@@ -320,6 +338,91 @@ with tabs[3]:
             st.line_chart(fold_detail.set_index("test_end")[["expectancy", "profit_factor"]])
 
 with tabs[4]:
+    st.subheader("Cuenta OOS")
+    if account_oos_aggregate.empty:
+        st.info("No hay Account OOS todavia. Ejecuta el pipeline research completo.")
+    else:
+        oos = account_oos_aggregate[
+            account_oos_aggregate["edge"].isin(filtered["edge"].unique())
+            & account_oos_aggregate["timeframe"].isin(filtered["timeframe"].unique())
+        ].copy()
+        if oos.empty:
+            st.info("No hay resultados OOS con los filtros actuales.")
+        else:
+            oos = oos.sort_values(["positive_fold_rate", "median_oos_return"], ascending=False)
+            cols = [
+                "edge",
+                "timeframe",
+                "folds",
+                "positive_fold_rate",
+                "median_oos_return",
+                "median_oos_profit_factor",
+                "worst_oos_drawdown",
+                "total_oos_trades",
+            ]
+            st.dataframe(
+                oos[cols],
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "positive_fold_rate": st.column_config.NumberColumn(
+                        "Positive folds", format="%.2f"
+                    ),
+                    "median_oos_return": st.column_config.NumberColumn(
+                        "Median return", format="%.3f"
+                    ),
+                    "median_oos_profit_factor": st.column_config.NumberColumn(
+                        "Median PF", format="%.3f"
+                    ),
+                    "worst_oos_drawdown": st.column_config.NumberColumn("Worst DD", format="%.3f"),
+                },
+            )
+
+            if not account_oos_summary.empty:
+                fold_summary = account_oos_summary[
+                    account_oos_summary["edge"].isin(oos["edge"].unique())
+                    & account_oos_summary["timeframe"].isin(oos["timeframe"].unique())
+                ].copy()
+                selected = st.selectbox(
+                    "Detalle cuenta OOS",
+                    [
+                        f"{row.edge} | {row.timeframe}"
+                        for row in oos[["edge", "timeframe"]]
+                        .drop_duplicates()
+                        .itertuples(index=False)
+                    ],
+                )
+                selected_edge, selected_timeframe = [part.strip() for part in selected.split("|")]
+                detail = fold_summary[
+                    (fold_summary["edge"] == selected_edge)
+                    & (fold_summary["timeframe"] == selected_timeframe)
+                ].sort_values("fold")
+                if detail.empty:
+                    st.info("No hay detalle de folds para esta seleccion.")
+                else:
+                    st.dataframe(detail, width="stretch", hide_index=True)
+                    st.bar_chart(
+                        detail.set_index("fold")[["total_return", "profit_factor", "max_drawdown"]]
+                    )
+
+                if not account_oos_equity.empty and not detail.empty:
+                    fold = st.selectbox("Fold equity", sorted(detail["fold"].unique()))
+                    equity_detail = account_oos_equity[
+                        (account_oos_equity["edge"] == selected_edge)
+                        & (account_oos_equity["timeframe"] == selected_timeframe)
+                        & (account_oos_equity["fold"] == fold)
+                    ].copy()
+                    if not equity_detail.empty:
+                        equity_detail["date"] = pd.to_datetime(equity_detail["date"], utc=True)
+                        chart1, chart2 = st.columns(2)
+                        with chart1:
+                            st.caption("Equity del fold")
+                            st.line_chart(equity_detail.set_index("date")[["equity"]])
+                        with chart2:
+                            st.caption("Drawdown del fold")
+                            st.line_chart(equity_detail.set_index("date")[["drawdown"]])
+
+with tabs[5]:
     st.subheader("Liga por temporada")
     if season.empty:
         st.info("No hay season_summary.parquet todavia. Ejecuta el edge engine.")
@@ -347,13 +450,14 @@ with tabs[4]:
                 hide_index=True,
             )
 
-with tabs[5]:
+with tabs[6]:
     st.subheader("Detalle de trades")
     if trades.empty:
         st.info("No hay archivo de trades.")
     else:
         labels = [
-            f"{row.edge} | {row.pair} | {row.timeframe} | PF {row.profit_factor:.2f} | {row.trades} trades"
+            f"{row.edge} | {row.pair} | {row.timeframe} | "
+            f"PF {row.profit_factor:.2f} | {row.trades} trades"
             for row in filtered.itertuples(index=False)
         ]
         selected_label = st.selectbox("Seleccion", labels)
@@ -401,7 +505,7 @@ with tabs[5]:
 
             st.dataframe(eq, width="stretch", hide_index=True)
 
-with tabs[6]:
+with tabs[7]:
     st.subheader("Warehouse")
     st.caption("Datos disponibles para investigacion.")
     c1, c2, c3 = st.columns(3)

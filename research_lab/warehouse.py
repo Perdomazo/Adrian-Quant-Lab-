@@ -23,7 +23,7 @@ def write_parquet_atomic(df: pd.DataFrame, path: Path) -> None:
     df.to_parquet(tmp_path, index=False)
     with tmp_path.open("rb") as handle:
         os.fsync(handle.fileno())
-    os.replace(tmp_path, path)
+    tmp_path.replace(path)
 
 
 def pair_to_file(pair: str) -> str:
@@ -233,7 +233,7 @@ def generate_features(
     return features_manifest
 
 
-def refresh_duckdb(storage: Path) -> None:
+def refresh_duckdb(storage: Path) -> None:  # noqa: C901
     db_path = storage / "lab.duckdb"
     con = duckdb.connect(str(db_path))
 
@@ -316,6 +316,36 @@ def refresh_duckdb(storage: Path) -> None:
             con.execute(
                 f"CREATE OR REPLACE VIEW account_rejections AS "
                 f"SELECT * FROM read_parquet('{sql_path(account_rejections)}')"
+            )
+        account_oos_summary = storage / "results" / "account_oos_summary.parquet"
+        if account_oos_summary.exists():
+            con.execute(
+                f"CREATE OR REPLACE VIEW account_oos_summary AS "
+                f"SELECT * FROM read_parquet('{sql_path(account_oos_summary)}')"
+            )
+        account_oos_trades = storage / "results" / "account_oos_trades.parquet"
+        if account_oos_trades.exists():
+            con.execute(
+                f"CREATE OR REPLACE VIEW account_oos_trades AS "
+                f"SELECT * FROM read_parquet('{sql_path(account_oos_trades)}')"
+            )
+        account_oos_equity = storage / "results" / "account_oos_equity.parquet"
+        if account_oos_equity.exists():
+            con.execute(
+                f"CREATE OR REPLACE VIEW account_oos_equity AS "
+                f"SELECT * FROM read_parquet('{sql_path(account_oos_equity)}')"
+            )
+        account_oos_rejections = storage / "results" / "account_oos_rejections.parquet"
+        if account_oos_rejections.exists():
+            con.execute(
+                f"CREATE OR REPLACE VIEW account_oos_rejections AS "
+                f"SELECT * FROM read_parquet('{sql_path(account_oos_rejections)}')"
+            )
+        account_oos_aggregate = storage / "results" / "account_oos_aggregate.parquet"
+        if account_oos_aggregate.exists():
+            con.execute(
+                f"CREATE OR REPLACE VIEW account_oos_aggregate AS "
+                f"SELECT * FROM read_parquet('{sql_path(account_oos_aggregate)}')"
             )
         deep_summary = storage / "results" / "deep_validation_summary.parquet"
         if deep_summary.exists():

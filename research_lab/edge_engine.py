@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import os
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from research_lab.config import load_decision_rules
+from research_lab.validation_windows import build_temporal_folds
 from research_lab.warehouse import feature_path, refresh_duckdb, write_parquet_atomic
 
 
@@ -104,7 +105,7 @@ def monte_carlo_stats(returns: pd.Series, sims: int, seed: int, ruin_drawdown: f
 def stress_stats(returns: pd.Series, extra_costs: list[float]) -> dict:
     out: dict[str, float] = {}
     for cost in extra_costs:
-        bps = int(round(cost * 10000))
+        bps = round(cost * 10000)
         stressed = returns - cost
         out[f"stress_pf_{bps}bps"] = profit_factor(stressed)
         out[f"stress_expectancy_{bps}bps"] = (
@@ -200,7 +201,7 @@ def summarize_trades(
     )
     std = ret.std(ddof=0)
     return {
-        "trades": int(len(ret)),
+        "trades": len(ret),
         "win_rate": float((ret > 0).mean()),
         "expectancy": float(ret.mean()),
         "profit_factor": profit_factor(ret),
@@ -328,14 +329,16 @@ def signal_telemetry(
     signal_idx = np.flatnonzero(entry_arr)
     expected_maker_fills = 0
 
-    for idx in signal_idx:
-        limit_price = close[idx] * (1.0 - maker_offset)
+    for raw_idx in signal_idx:
+        idx = int(raw_idx)
+        limit_price = float(close[idx] * (1.0 - maker_offset))
         start = idx + 1
         end = min(idx + 1 + max(maker_timeout_bars, 1), len(low))
-        if start < end and np.nanmin(low[start:end]) <= limit_price:
+        min_low = float(np.nanmin(low[start:end])) if start < end else np.nan
+        if start < end and min_low <= limit_price:
             expected_maker_fills += 1
 
-    signals = int(len(signal_idx))
+    signals = len(signal_idx)
     fill_rate = expected_maker_fills / signals if signals else np.nan
     return {
         "entry_signals": signals,
@@ -532,7 +535,7 @@ def run_edges(
     summaries = []
     all_trades = []
     all_signals = []
-    run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     tested_combinations = len(pairs) * len(timeframes) * len(EDGES)
     combo_index = 0
     stress_rules = rules.get("stress", {})
@@ -605,32 +608,6 @@ def run_edges(
     return summary_df, trades_df
 
 
-def walk_forward_folds(
-    df: pd.DataFrame,
-    train_months: int,
-    test_months: int,
-    step_months: int,
-) -> list[tuple[int, pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
-    dates = pd.to_datetime(df["date"])
-    start = dates.min()
-    end = dates.max()
-    if pd.isna(start) or pd.isna(end):
-        return []
-
-    folds = []
-    fold = 1
-    train_start = start
-    while True:
-        train_end = train_start + pd.DateOffset(months=train_months)
-        test_end = train_end + pd.DateOffset(months=test_months)
-        if test_end > end:
-            break
-        folds.append((fold, train_start, train_end, train_end, test_end))
-        fold += 1
-        train_start = train_start + pd.DateOffset(months=step_months)
-    return folds
-
-
 def run_walk_forward(
     storage: Path,
     exchange: str,
@@ -647,7 +624,7 @@ def run_walk_forward(
     run_id: str | None = None,
 ) -> pd.DataFrame:
     rules = rules or load_decision_rules()
-    run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = run_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     fold_rules = {
         **rules,
         "monte_carlo": {"sims": 0},
@@ -661,10 +638,13 @@ def run_walk_forward(
                 print(f"Skipping missing features: {path}")
                 continue
             df = pd.read_parquet(path).sort_values("date").reset_index(drop=True)
-            folds = walk_forward_folds(df, train_months, test_months, step_months)
+            df["date"] = pd.to_datetime(df["date"], utc=True)
+            folds = build_temporal_folds(df["date"], train_months, test_months, step_months)
             for edge in EDGES:
-                for fold, train_start, train_end, test_start, test_end in folds:
-                    test_df = df[(df["date"] >= test_start) & (df["date"] < test_end)].copy()
+                for fold in folds:
+                    test_df = df[
+                        (df["date"] >= fold.test_start) & (df["date"] < fold.test_end)
+                    ].copy()
                     trades = backtest_edge(
                         test_df, edge, fee, slippage, stop_mult, take_profit_mult
                     )
@@ -676,11 +656,11 @@ def run_walk_forward(
                             "timeframe": timeframe,
                             "edge": edge.name,
                             "description": edge.description,
-                            "fold": fold,
-                            "train_start": train_start,
-                            "train_end": train_end,
-                            "test_start": test_start,
-                            "test_end": test_end,
+                            "fold": fold.fold,
+                            "train_start": fold.train_start,
+                            "train_end": fold.train_end,
+                            "test_start": fold.test_start,
+                            "test_end": fold.test_end,
                             "fee": fee,
                             "slippage": slippage,
                             "run_id": run_id,
