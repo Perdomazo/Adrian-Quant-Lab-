@@ -120,6 +120,13 @@ def file_exists_hash(path: Path) -> str | None:
     return sha256_file(path) if path.exists() else None
 
 
+def read_json_for_run(path: Path, run_id: str) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return payload if str(payload.get("run_id")) == str(run_id) else {}
+
+
 def source_tree_hash(root: Path) -> str | None:
     source_root = root / "research_lab"
     if not source_root.exists():
@@ -178,7 +185,7 @@ def base_manifest(root: Path, storage: Path, run_id: str, status: str) -> dict[s
     ohlcv_manifest = storage / "ohlcv_manifest.parquet"
     features_manifest = storage / "features_manifest.parquet"
     data_quality = storage / "results" / "data_quality_report.json"
-    dq = json.loads(data_quality.read_text(encoding="utf-8")) if data_quality.exists() else {}
+    dq = read_json_for_run(data_quality, run_id)
     decision_rules = root / "research_lab" / "config" / "decision_rules.json"
     promotion_rules = root / "research_lab" / "config" / "promotion_rules.json"
     account_rules = root / "research_lab" / "config" / "account_rules.json"
@@ -250,8 +257,16 @@ def update_run(
         payload["error"] = error
 
     dq_path = storage / "results" / "data_quality_report.json"
-    if dq_path.exists():
-        dq = json.loads(dq_path.read_text(encoding="utf-8"))
+    dq = read_json_for_run(dq_path, run_id)
+    dq_keys = [
+        "data_quality_status",
+        "expected_last_complete_candle",
+        "actual_last_available_candle",
+        "last_complete_candle",
+        "max_lag_bars",
+        "allowed_lag_bars",
+    ]
+    if dq:
         payload["data_quality_status"] = dq.get("status")
         payload["expected_last_complete_candle"] = dq.get("expected_last_complete_candle")
         payload["actual_last_available_candle"] = dq.get("actual_last_available_candle")
@@ -260,6 +275,9 @@ def update_run(
         )
         payload["max_lag_bars"] = dq.get("max_lag_bars")
         payload["allowed_lag_bars"] = dq.get("allowed_lag_bars")
+    else:
+        for key in dq_keys:
+            payload.pop(key, None)
     payload["data_hash"] = hash_many([storage / "ohlcv_manifest.parquet"])
     payload["features_hash"] = hash_many([storage / "features_manifest.parquet"])
     account_rules = root / "research_lab" / "config" / "account_rules.json"
@@ -285,17 +303,23 @@ def update_run(
     payload["test_months"] = int(os.environ.get("TEST_MONTHS", payload.get("test_months", 6)))
     payload["step_months"] = int(os.environ.get("STEP_MONTHS", payload.get("step_months", 6)))
     account_validation = storage / "results" / "account_validation.json"
-    if account_validation.exists():
-        validation = json.loads(account_validation.read_text(encoding="utf-8"))
+    validation = read_json_for_run(account_validation, run_id)
+    if validation:
         payload["account_validation_status"] = validation.get("status")
+    else:
+        payload.pop("account_validation_status", None)
     account_oos_validation = storage / "results" / "account_oos_validation.json"
-    if account_oos_validation.exists():
-        validation = json.loads(account_oos_validation.read_text(encoding="utf-8"))
+    validation = read_json_for_run(account_oos_validation, run_id)
+    if validation:
         payload["account_oos_validation_status"] = validation.get("status")
+    else:
+        payload.pop("account_oos_validation_status", None)
     account_candidate = storage / "results" / "account_candidate_decision.json"
-    if account_candidate.exists():
-        decision = json.loads(account_candidate.read_text(encoding="utf-8"))
+    decision = read_json_for_run(account_candidate, run_id)
+    if decision:
         payload["account_candidate_status"] = decision.get("status")
+    else:
+        payload.pop("account_candidate_status", None)
 
     atomic_write_json(manifest_path(storage, run_id), payload)
     latest_dir = storage / "results" / "latest"
