@@ -33,6 +33,8 @@ RUN_FILES = [
     "account_oos_rejections.parquet",
     "account_oos_aggregate.parquet",
     "account_oos_validation.json",
+    "account_candidate_summary.parquet",
+    "account_candidate_decision.json",
     "deep_validation_summary.parquet",
     "deep_validation_manifest.json",
 ]
@@ -180,6 +182,7 @@ def base_manifest(root: Path, storage: Path, run_id: str, status: str) -> dict[s
     decision_rules = root / "research_lab" / "config" / "decision_rules.json"
     promotion_rules = root / "research_lab" / "config" / "promotion_rules.json"
     account_rules = root / "research_lab" / "config" / "account_rules.json"
+    account_decision_rules = root / "research_lab" / "config" / "account_decision_rules.json"
     pair_universe = root / "research_lab" / "config" / "pair_universe.json"
     deployed_commit = root / "research_lab" / "DEPLOYED_COMMIT"
     deployment_hash = root / "research_lab" / "DEPLOYMENT_PACKAGE_SHA256"
@@ -211,6 +214,9 @@ def base_manifest(root: Path, storage: Path, run_id: str, status: str) -> dict[s
         "account_validation_version": "account-validation-v1",
         "account_oos_version": "account-oos-v1",
         "account_oos_validation_version": "account-oos-validation-v1",
+        "account_candidate_version": "account-candidate-v1",
+        "account_decision_rules_version": json_version(account_decision_rules),
+        "account_decision_rules_hash": file_exists_hash(account_decision_rules),
         "train_months": int(os.environ.get("TRAIN_MONTHS", "18")),
         "test_months": int(os.environ.get("TEST_MONTHS", "6")),
         "step_months": int(os.environ.get("STEP_MONTHS", "6")),
@@ -257,6 +263,7 @@ def update_run(
     payload["data_hash"] = hash_many([storage / "ohlcv_manifest.parquet"])
     payload["features_hash"] = hash_many([storage / "features_manifest.parquet"])
     account_rules = root / "research_lab" / "config" / "account_rules.json"
+    account_decision_rules = root / "research_lab" / "config" / "account_decision_rules.json"
     pair_universe = root / "research_lab" / "config" / "pair_universe.json"
     deployed_commit = root / "research_lab" / "DEPLOYED_COMMIT"
     deployment_hash = root / "research_lab" / "DEPLOYMENT_PACKAGE_SHA256"
@@ -271,6 +278,9 @@ def update_run(
     payload["account_validation_version"] = "account-validation-v1"
     payload["account_oos_version"] = "account-oos-v1"
     payload["account_oos_validation_version"] = "account-oos-validation-v1"
+    payload["account_candidate_version"] = "account-candidate-v1"
+    payload["account_decision_rules_version"] = json_version(account_decision_rules)
+    payload["account_decision_rules_hash"] = file_exists_hash(account_decision_rules)
     payload["train_months"] = int(os.environ.get("TRAIN_MONTHS", payload.get("train_months", 18)))
     payload["test_months"] = int(os.environ.get("TEST_MONTHS", payload.get("test_months", 6)))
     payload["step_months"] = int(os.environ.get("STEP_MONTHS", payload.get("step_months", 6)))
@@ -282,6 +292,10 @@ def update_run(
     if account_oos_validation.exists():
         validation = json.loads(account_oos_validation.read_text(encoding="utf-8"))
         payload["account_oos_validation_status"] = validation.get("status")
+    account_candidate = storage / "results" / "account_candidate_decision.json"
+    if account_candidate.exists():
+        decision = json.loads(account_candidate.read_text(encoding="utf-8"))
+        payload["account_candidate_status"] = decision.get("status")
 
     atomic_write_json(manifest_path(storage, run_id), payload)
     latest_dir = storage / "results" / "latest"

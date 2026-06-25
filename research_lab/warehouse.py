@@ -347,6 +347,18 @@ def refresh_duckdb(storage: Path) -> None:  # noqa: C901
                 f"CREATE OR REPLACE VIEW account_oos_aggregate AS "
                 f"SELECT * FROM read_parquet('{sql_path(account_oos_aggregate)}')"
             )
+        account_candidate_summary = storage / "results" / "account_candidate_summary.parquet"
+        if account_candidate_summary.exists():
+            con.execute(
+                f"CREATE OR REPLACE VIEW account_candidate_summary AS "
+                f"SELECT * FROM read_parquet('{sql_path(account_candidate_summary)}')"
+            )
+        account_candidate_history = storage / "results" / "account_candidate_history.parquet"
+        if account_candidate_history.exists():
+            con.execute(
+                f"CREATE OR REPLACE VIEW account_candidate_history AS "
+                f"SELECT * FROM read_parquet('{sql_path(account_candidate_history)}')"
+            )
         deep_summary = storage / "results" / "deep_validation_summary.parquet"
         if deep_summary.exists():
             con.execute(

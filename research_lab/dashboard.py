@@ -15,6 +15,7 @@ RUN_HISTORY = STORAGE / "results" / "run_history.parquet"
 ACCOUNT_OOS_AGGREGATE = STORAGE / "results" / "account_oos_aggregate.parquet"
 ACCOUNT_OOS_SUMMARY = STORAGE / "results" / "account_oos_summary.parquet"
 ACCOUNT_OOS_EQUITY = STORAGE / "results" / "account_oos_equity.parquet"
+ACCOUNT_CANDIDATE_SUMMARY = STORAGE / "results" / "account_candidate_summary.parquet"
 PROMOTION_DECISION = STORAGE / "results" / "promotion_decision.json"
 FEATURES_MANIFEST = STORAGE / "features_manifest.parquet"
 OHLCV_MANIFEST = STORAGE / "ohlcv_manifest.parquet"
@@ -112,6 +113,7 @@ run_history = load_parquet(RUN_HISTORY)
 account_oos_aggregate = load_parquet(ACCOUNT_OOS_AGGREGATE)
 account_oos_summary = load_parquet(ACCOUNT_OOS_SUMMARY)
 account_oos_equity = load_parquet(ACCOUNT_OOS_EQUITY)
+account_candidate_summary = load_parquet(ACCOUNT_CANDIDATE_SUMMARY)
 promotion_decision = load_json_text(PROMOTION_DECISION)
 features_manifest = load_parquet(FEATURES_MANIFEST)
 ohlcv_manifest = load_parquet(OHLCV_MANIFEST)
@@ -339,6 +341,37 @@ with tabs[3]:
 
 with tabs[4]:
     st.subheader("Cuenta OOS")
+    st.markdown("### Decision de cuenta")
+    if account_candidate_summary.empty:
+        st.info("No hay account_candidate_summary.parquet todavia.")
+    else:
+        candidate_view = account_candidate_summary[
+            account_candidate_summary["edge"].isin(filtered["edge"].unique())
+            & account_candidate_summary["timeframe"].isin(filtered["timeframe"].unique())
+        ].copy()
+        if candidate_view.empty:
+            st.info("No hay decisiones de cuenta con los filtros actuales.")
+        else:
+            decision_cols = [
+                "eligibility_status",
+                "account_verdict",
+                "edge",
+                "timeframe",
+                "candidate_id",
+                "full_trades",
+                "full_profit_factor",
+                "full_max_drawdown",
+                "oos_folds",
+                "oos_positive_fold_rate",
+                "oos_median_profit_factor",
+                "oos_worst_drawdown",
+                "oos_total_trades",
+                "consecutive_candidate_runs",
+                "failed_rules",
+            ]
+            decision_cols = [col for col in decision_cols if col in candidate_view.columns]
+            st.dataframe(candidate_view[decision_cols], width="stretch", hide_index=True)
+
     if account_oos_aggregate.empty:
         st.info("No hay Account OOS todavia. Ejecuta el pipeline research completo.")
     else:

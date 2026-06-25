@@ -20,6 +20,7 @@ PROMOTION_RULES="${PROMOTION_RULES:-research_lab/config/promotion_rules.json}"
 DECISION_RULES="${DECISION_RULES:-research_lab/config/decision_rules.json}"
 ACCOUNT_RULES="${ACCOUNT_RULES:-research_lab/config/account_rules.json}"
 PAIR_UNIVERSE="${PAIR_UNIVERSE:-research_lab/config/pair_universe.json}"
+ACCOUNT_DECISION_RULES="${ACCOUNT_DECISION_RULES:-research_lab/config/account_decision_rules.json}"
 TRAIN_MONTHS="${TRAIN_MONTHS:-18}"
 TEST_MONTHS="${TEST_MONTHS:-6}"
 STEP_MONTHS="${STEP_MONTHS:-6}"
@@ -225,6 +226,15 @@ python -m research_lab.account_oos_validation \
   --run-id "$RUN_ID" \
   --fail-on-error
 stage_end account_oos_validation
+
+stage_start
+python -m research_lab.account_candidate \
+  --root "$ROOT_DIR" \
+  --storage "$STORAGE_DIR" \
+  --rules "$ACCOUNT_DECISION_RULES" \
+  --pair-universe "$PAIR_UNIVERSE" \
+  --run-id "$RUN_ID"
+stage_end account_candidate
 
 stage_start
 python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" snapshot
