@@ -65,10 +65,25 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def read_json_artifact(results: Path, run_id: str, name: str) -> dict[str, Any]:
+    for path in [results / "runs" / run_id / name, results / name]:
+        payload = read_json(path)
+        if payload and str(payload.get("run_id")) == str(run_id):
+            return payload
+    return {}
+
+
 def read_parquet(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
     return pd.read_parquet(path)
+
+
+def read_parquet_artifact(results: Path, run_id: str, name: str) -> pd.DataFrame:
+    run_path = results / "runs" / run_id / name
+    if run_path.exists():
+        return read_parquet(run_path)
+    return read_parquet(results / name)
 
 
 def load_rules(path: Path) -> tuple[dict[str, Any], str, str | None]:
@@ -253,13 +268,13 @@ def build_candidate_rows(  # noqa: C901
         run_manifest = read_json(results / "runs" / run_id / "run_manifest.json")
         if run_manifest:
             manifest = run_manifest
-    data_quality = read_json(results / "data_quality_report.json")
-    account_validation = read_json(results / "account_validation.json")
-    account_oos_validation = read_json(results / "account_oos_validation.json")
-    account_summary = read_parquet(results / "account_summary.parquet")
-    account_equity = read_parquet(results / "account_equity.parquet")
-    account_oos = read_parquet(results / "account_oos_aggregate.parquet")
-    account_oos_summary = read_parquet(results / "account_oos_summary.parquet")
+    data_quality = read_json_artifact(results, run_id, "data_quality_report.json")
+    account_validation = read_json_artifact(results, run_id, "account_validation.json")
+    account_oos_validation = read_json_artifact(results, run_id, "account_oos_validation.json")
+    account_summary = read_parquet_artifact(results, run_id, "account_summary.parquet")
+    account_equity = read_parquet_artifact(results, run_id, "account_equity.parquet")
+    account_oos = read_parquet_artifact(results, run_id, "account_oos_aggregate.parquet")
+    account_oos_summary = read_parquet_artifact(results, run_id, "account_oos_summary.parquet")
     if run_id:
         for frame_name, frame in [("summary", account_summary), ("oos", account_oos)]:
             if not frame.empty and "run_id" in frame.columns:

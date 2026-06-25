@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -228,6 +229,33 @@ def test_oos_validation_failed_blocks(tmp_path):
     summary, _, _, *_ = run_candidate(tmp_path, account_oos_validation_status="failed")
 
     assert summary.iloc[0]["eligibility_status"] == "failed_validation"
+
+
+def test_historical_run_uses_run_snapshot_before_global_artifacts(tmp_path):
+    root, storage, rules_path = setup_candidate_storage(tmp_path, folds=3)
+    results = storage / "results"
+    run_dir = results / "runs" / "run-a"
+    for name in [
+        "data_quality_report.json",
+        "account_validation.json",
+        "account_oos_validation.json",
+    ]:
+        shutil.copy2(results / name, run_dir / name)
+
+    write_json(results / "data_quality_report.json", {"run_id": "run-b", "status": "failed"})
+    write_json(results / "account_validation.json", {"run_id": "run-b", "status": "failed"})
+    write_json(results / "account_oos_validation.json", {"run_id": "run-b", "status": "failed"})
+
+    summary, decision, _ = run_account_candidate(
+        root,
+        storage,
+        rules_path,
+        root / "research_lab" / "config" / "pair_universe.json",
+        "run-a",
+    )
+
+    assert summary.iloc[0]["eligibility_status"] == "insufficient_history"
+    assert decision["insufficient_history_count"] == 1
 
 
 def test_three_folds_with_minimum_five_is_insufficient_history(tmp_path):
