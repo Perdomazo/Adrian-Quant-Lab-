@@ -213,6 +213,32 @@ def test_manifest_failed_produces_invalid_run(tmp_path):
     assert summary.iloc[0]["eligibility_status"] == "invalid_run"
 
 
+def test_running_manifest_requires_explicit_pipeline_flag(tmp_path):
+    root, storage, rules_path = setup_candidate_storage(
+        tmp_path, manifest_status="running", folds=3
+    )
+
+    summary, _, _ = run_account_candidate(
+        root,
+        storage,
+        rules_path,
+        root / "research_lab" / "config" / "pair_universe.json",
+        "run-a",
+    )
+    assert summary.iloc[0]["eligibility_status"] == "invalid_run"
+
+    allowed, decision, _ = run_account_candidate(
+        root,
+        storage,
+        rules_path,
+        root / "research_lab" / "config" / "pair_universe.json",
+        "run-a",
+        allow_running_run=True,
+    )
+    assert allowed.iloc[0]["eligibility_status"] == "insufficient_history"
+    assert decision["insufficient_history_count"] == 1
+
+
 def test_data_quality_failed_blocks(tmp_path):
     summary, _, _, *_ = run_candidate(tmp_path, data_quality_status="failed")
 

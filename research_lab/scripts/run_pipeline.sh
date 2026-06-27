@@ -233,7 +233,8 @@ python -m research_lab.account_candidate \
   --storage "$STORAGE_DIR" \
   --rules "$ACCOUNT_DECISION_RULES" \
   --pair-universe "$PAIR_UNIVERSE" \
-  --run-id "$RUN_ID"
+  --run-id "$RUN_ID" \
+  --allow-running-run
 stage_end account_candidate
 
 stage_start

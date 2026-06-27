@@ -174,13 +174,18 @@ def validation_status(
     account_validation: dict[str, Any],
     account_oos_validation: dict[str, Any],
     eligibility_rules: dict[str, Any],
+    allow_running_run: bool = False,
 ) -> tuple[str, list[str], list[str]]:
     passed: list[str] = []
     failed: list[str] = []
-    if manifest.get("status") != "success":
-        failed.append(f"run_manifest.status: {manifest.get('status')} != success")
+    manifest_status = manifest.get("status")
+    if manifest_status == "success":
+        passed.append("run_manifest.status: success")
+    elif allow_running_run and manifest_status == "running":
+        passed.append("run_manifest.status: running allowed")
+    else:
+        failed.append(f"run_manifest.status: {manifest_status} != success")
         return "invalid_run", passed, failed
-    passed.append("run_manifest.status: success")
 
     validations = [
         (
@@ -261,6 +266,7 @@ def build_candidate_rows(  # noqa: C901
     rules_hash: str | None,
     pair_universe: Path,
     run_id: str,
+    allow_running_run: bool = False,
 ) -> pd.DataFrame:
     results = storage / "results"
     manifest = read_json(results / "latest" / "run_manifest.json")
@@ -296,6 +302,7 @@ def build_candidate_rows(  # noqa: C901
         account_validation,
         account_oos_validation,
         eligibility_rules,
+        allow_running_run,
     )
     pair_universe_version = json_version(pair_universe) or manifest.get("pair_universe_version")
     pair_universe_hash = file_exists_hash(pair_universe) or manifest.get("pair_universe_hash")
@@ -466,6 +473,7 @@ def run_account_candidate(
     rules_path: Path,
     pair_universe: Path,
     run_id: str,
+    allow_running_run: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, Any], pd.DataFrame]:
     rules, rules_version, rules_hash = load_rules(rules_path)
     results = storage / "results"
@@ -476,7 +484,14 @@ def run_account_candidate(
             manifest = run_manifest
 
     summary = build_candidate_rows(
-        root, storage, rules, rules_version, rules_hash, pair_universe, run_id
+        root,
+        storage,
+        rules,
+        rules_version,
+        rules_hash,
+        pair_universe,
+        run_id,
+        allow_running_run,
     )
     history = update_history(storage, summary, manifest)
     summary = add_history_metrics(summary, history)
@@ -528,6 +543,11 @@ def main() -> None:
         type=Path,
     )
     parser.add_argument("--run-id", default=os.environ.get("RUN_ID"))
+    parser.add_argument(
+        "--allow-running-run",
+        action="store_true",
+        help="Allow the active pipeline run to be evaluated before run_manager marks success.",
+    )
     args = parser.parse_args()
 
     run_id = args.run_id
@@ -538,7 +558,12 @@ def main() -> None:
         raise SystemExit("--run-id is required")
 
     summary, decision, _ = run_account_candidate(
-        args.root.resolve(), args.storage, args.rules, args.pair_universe, str(run_id)
+        args.root.resolve(),
+        args.storage,
+        args.rules,
+        args.pair_universe,
+        str(run_id),
+        args.allow_running_run,
     )
     print(json.dumps(decision, indent=2, sort_keys=True))
     if not summary.empty:
