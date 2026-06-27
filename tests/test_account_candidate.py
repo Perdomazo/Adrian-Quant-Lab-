@@ -23,6 +23,7 @@ def base_rules(min_oos_folds: int = 5) -> dict:
             "require_account_oos_validation_passed": True,
             "min_oos_folds": min_oos_folds,
             "min_observation_months": 0,
+            "min_pair_coverage_rate": 0.60,
         },
         "candidate": {
             "min_full_trades": 80,
@@ -69,6 +70,7 @@ def setup_candidate_storage(
     oos_median_profit_factor: float = 1.12,
     oos_worst_drawdown: float = -0.10,
     oos_total_trades: int = 100,
+    oos_min_pair_coverage_rate: float = 1.0,
     empty: bool = False,
 ) -> tuple[Path, Path, Path]:
     root = tmp_path
@@ -163,6 +165,8 @@ def setup_candidate_storage(
                 "worst_oos_return": oos_median_return,
                 "total_oos_trades": oos_total_trades,
                 "median_oos_trades": oos_total_trades / max(folds, 1),
+                "min_pair_coverage_rate": oos_min_pair_coverage_rate,
+                "median_pair_coverage_rate": oos_min_pair_coverage_rate,
             }
         ]
     ).to_parquet(results / "account_oos_aggregate.parquet")
@@ -288,6 +292,14 @@ def test_three_folds_with_minimum_five_is_insufficient_history(tmp_path):
     summary, decision, _, *_ = run_candidate(tmp_path, folds=3)
 
     assert summary.iloc[0]["eligibility_status"] == "insufficient_history"
+    assert decision["insufficient_history_count"] == 1
+
+
+def test_low_pair_coverage_is_insufficient_history(tmp_path):
+    summary, decision, _, *_ = run_candidate(tmp_path, oos_min_pair_coverage_rate=0.50)
+
+    assert summary.iloc[0]["eligibility_status"] == "insufficient_history"
+    assert "pair_coverage_rate: 0.5 < 0.6" in summary.iloc[0]["failed_rules"]
     assert decision["insufficient_history_count"] == 1
 
 

@@ -33,21 +33,27 @@ def feature_frame(start: str = "2025-01-01", end: str = "2025-04-15") -> pd.Data
     return out
 
 
-def write_features(storage, pair: str = "BTC/USDT", timeframe: str = "1h") -> None:
+def write_features(
+    storage,
+    pair: str = "BTC/USDT",
+    timeframe: str = "1h",
+    start: str = "2025-01-01",
+    end: str = "2025-04-15",
+) -> None:
     path = feature_path(storage, "kucoin", pair, timeframe)
     path.parent.mkdir(parents=True, exist_ok=True)
-    feature_frame().to_parquet(path)
+    feature_frame(start, end).to_parquet(path)
 
 
 def write_signals(storage, rows: list[dict]) -> None:
     pd.DataFrame(rows).to_parquet(storage / "results" / "edge_signals.parquet")
 
 
-def run_oos(storage, run_id: str = "run-a"):
+def run_oos(storage, run_id: str = "run-a", pairs: list[str] | None = None):
     return run_account_oos(
         storage=storage,
         exchange="kucoin",
-        pairs=["BTC/USDT"],
+        pairs=pairs or ["BTC/USDT"],
         timeframes=["1h"],
         config=cfg(fee=0.0, entry_slippage=0.0, exit_slippage=0.0),
         account_rules_version="account-rules-test",
@@ -133,6 +139,30 @@ def test_account_oos_aggregate_matches_summary(tmp_path):
         aggregate.sort_index(axis=1).reset_index(drop=True),
         expected.sort_index(axis=1).reset_index(drop=True),
     )
+
+
+def test_account_oos_records_pair_coverage_by_fold(tmp_path):
+    storage = make_storage(tmp_path)
+    write_features(storage, "BTC/USDT", start="2025-01-01", end="2025-04-15")
+    write_features(storage, "ETH/USDT", start="2025-03-01", end="2025-04-15")
+    write_signals(
+        storage,
+        [
+            entry_signal(pair="BTC/USDT", date="2025-02-02 00:00:00+00:00"),
+            entry_signal(pair="ETH/USDT", date="2025-03-02 00:00:00+00:00"),
+        ],
+    )
+
+    summary, _, _, _, aggregate = run_oos(storage, pairs=["BTC/USDT", "ETH/USDT"])
+    by_fold = summary.sort_values("fold").set_index("fold")
+
+    assert by_fold.loc[1, "available_pairs"] == ["BTC/USDT"]
+    assert by_fold.loc[1, "missing_pairs"] == ["ETH/USDT"]
+    assert by_fold.loc[1, "available_pair_count"] == 1
+    assert by_fold.loc[1, "universe_pair_count"] == 2
+    assert by_fold.loc[1, "pair_coverage_rate"] == 0.5
+    assert by_fold.loc[2, "pair_coverage_rate"] == 1.0
+    assert aggregate.iloc[0]["min_pair_coverage_rate"] == 0.5
 
 
 def test_account_oos_reproducible(tmp_path):

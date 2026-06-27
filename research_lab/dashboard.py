@@ -365,6 +365,7 @@ with tabs[4]:
                 "oos_positive_fold_rate",
                 "oos_median_profit_factor",
                 "oos_worst_drawdown",
+                "oos_min_pair_coverage_rate",
                 "oos_total_trades",
                 "consecutive_candidate_runs",
                 "failed_rules",
@@ -391,8 +392,10 @@ with tabs[4]:
                 "median_oos_return",
                 "median_oos_profit_factor",
                 "worst_oos_drawdown",
+                "min_pair_coverage_rate",
                 "total_oos_trades",
             ]
+            cols = [col for col in cols if col in oos.columns]
             st.dataframe(
                 oos[cols],
                 width="stretch",
@@ -408,6 +411,9 @@ with tabs[4]:
                         "Median PF", format="%.3f"
                     ),
                     "worst_oos_drawdown": st.column_config.NumberColumn("Worst DD", format="%.3f"),
+                    "min_pair_coverage_rate": st.column_config.NumberColumn(
+                        "Min pair coverage", format="%.2f"
+                    ),
                 },
             )
 

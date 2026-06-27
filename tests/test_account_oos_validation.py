@@ -29,6 +29,7 @@ def test_account_oos_validation_passes_valid_outputs(tmp_path):
     assert report["status"] == "passed"
     assert report["trades_outside_test"] == 0
     assert report["duplicate_folds"] == 0
+    assert report["pair_coverage_violations"] == 0
     assert report["aggregate_mismatches"] == 0
 
 
@@ -81,3 +82,16 @@ def test_account_oos_validation_detects_aggregate_mismatch(tmp_path):
 
     assert report["status"] == "failed"
     assert report["aggregate_mismatches"] >= 1
+
+
+def test_account_oos_validation_detects_pair_coverage_violation(tmp_path):
+    storage = prepare_valid_oos(tmp_path)
+    path = storage / "results" / "account_oos_summary.parquet"
+    summary = pd.read_parquet(path)
+    summary.loc[summary.index[0], "pair_coverage_rate"] = 2.0
+    summary.to_parquet(path)
+
+    report = validate_account_oos_outputs(storage, "run-a")
+
+    assert report["status"] == "failed"
+    assert report["pair_coverage_violations"] == 1

@@ -48,6 +48,7 @@ SUMMARY_COLUMNS = [
     "oos_median_profit_factor",
     "oos_worst_drawdown",
     "oos_total_trades",
+    "oos_min_pair_coverage_rate",
     "consecutive_candidate_runs",
     "first_candidate_date",
     "observation_calendar_days",
@@ -325,6 +326,7 @@ def build_candidate_rows(  # noqa: C901
         timeframe = str(item["timeframe"])
         edge_version = str(item.get("edge_version", "unknown"))
         oos_folds = int(item.get("folds", 0) or 0)
+        oos_min_pair_coverage_rate = float(item.get("min_pair_coverage_rate", 0.0) or 0.0)
         payload = {
             "edge": edge,
             "edge_version": edge_version,
@@ -364,6 +366,7 @@ def build_candidate_rows(  # noqa: C901
             "oos_median_profit_factor": float(item.get("median_oos_profit_factor", 0.0) or 0.0),
             "oos_worst_drawdown": float(item.get("worst_oos_drawdown", 0.0) or 0.0),
             "oos_total_trades": int(item.get("total_oos_trades", 0) or 0),
+            "oos_min_pair_coverage_rate": oos_min_pair_coverage_rate,
             "source_commit": source_commit,
             "data_hash": data_hash,
             "account_candidate_version": ACCOUNT_CANDIDATE_VERSION,
@@ -385,6 +388,14 @@ def build_candidate_rows(  # noqa: C901
             failed.append(f"observation_months: {months:g} < {min_months:g}")
         elif min_months:
             passed.append(f"observation_months: {months:g} >= {min_months:g}")
+
+        min_coverage = float(eligibility_rules.get("min_pair_coverage_rate", 0.0) or 0.0)
+        coverage = oos_min_pair_coverage_rate
+        if eligibility_status == "eligible" and coverage < min_coverage:
+            eligibility_status = "insufficient_history"
+            failed.append(f"pair_coverage_rate: {coverage:g} < {min_coverage:g}")
+        elif min_coverage:
+            passed.append(f"pair_coverage_rate: {coverage:g} >= {min_coverage:g}")
 
         candidate_ok, candidate_passed, candidate_failed = evaluate_metric_rules(
             row, rules.get("candidate", {}), "candidate"
@@ -576,6 +587,7 @@ def main() -> None:
             "oos_folds",
             "oos_positive_fold_rate",
             "oos_median_profit_factor",
+            "oos_min_pair_coverage_rate",
             "oos_total_trades",
         ]
         print(summary[cols].to_string(index=False))

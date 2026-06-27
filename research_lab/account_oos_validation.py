@@ -115,6 +115,27 @@ def equity_start_failures(summary: pd.DataFrame, equity: pd.DataFrame) -> int:
     return failures
 
 
+def pair_coverage_violations(summary: pd.DataFrame) -> int:
+    if summary.empty:
+        return 0
+    required = {"available_pair_count", "universe_pair_count", "pair_coverage_rate"}
+    if not required.issubset(summary.columns):
+        return len(summary)
+    available = summary["available_pair_count"].astype(float)
+    universe = summary["universe_pair_count"].astype(float)
+    rate = summary["pair_coverage_rate"].astype(float)
+    expected_rate = available / universe.replace(0, np.nan)
+    invalid = (
+        (universe <= 0)
+        | (available < 0)
+        | (available > universe)
+        | (rate < 0)
+        | (rate > 1)
+        | (~np.isclose(rate, expected_rate, atol=TOLERANCE, equal_nan=False))
+    )
+    return int(invalid.sum())
+
+
 def aggregate_mismatches(summary: pd.DataFrame, aggregate: pd.DataFrame) -> int:
     if summary.empty and aggregate.empty:
         return 0
@@ -167,6 +188,7 @@ def validate_account_oos_outputs(storage: Path, run_id: str | None = None) -> di
         "duplicate_folds": duplicate_folds(summary),
         "duplicate_equity_rows": duplicate_equity_rows(equity),
         "equity_start_failures": equity_start_failures(summary, equity),
+        "pair_coverage_violations": pair_coverage_violations(summary),
         "mixed_run_ids": mixed_run_ids,
         "nonfinite_rows": int(
             nonfinite_rows(summary)
@@ -189,6 +211,7 @@ def validate_account_oos_outputs(storage: Path, run_id: str | None = None) -> di
         "duplicate_folds",
         "duplicate_equity_rows",
         "equity_start_failures",
+        "pair_coverage_violations",
         "mixed_run_ids",
         "nonfinite_rows",
         "aggregate_mismatches",

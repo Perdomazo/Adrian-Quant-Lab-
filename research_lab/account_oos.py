@@ -38,6 +38,11 @@ SUMMARY_COLUMNS = [
     "account_rules_version",
     "account_simulator_version",
     "account_oos_version",
+    "available_pairs",
+    "missing_pairs",
+    "available_pair_count",
+    "universe_pair_count",
+    "pair_coverage_rate",
     "initial_cash",
     "final_equity",
     "total_return",
@@ -155,6 +160,8 @@ AGGREGATE_COLUMNS = [
     "worst_oos_return",
     "total_oos_trades",
     "median_oos_trades",
+    "min_pair_coverage_rate",
+    "median_pair_coverage_rate",
     "account_oos_version",
 ]
 
@@ -203,6 +210,56 @@ def common_feature_dates(features_by_pair: dict[str, pd.DataFrame]) -> pd.Series
     return values.drop_duplicates().sort_values().reset_index(drop=True)
 
 
+def all_feature_dates(features_by_pair: dict[str, pd.DataFrame]) -> pd.Series:
+    values: list[pd.Series] = []
+    for df in features_by_pair.values():
+        if df.empty or "date" not in df.columns:
+            continue
+        dates = pd.to_datetime(df["date"], utc=True).dropna().sort_values()
+        if not dates.empty:
+            values.append(dates)
+    if not values:
+        return pd.Series(dtype="datetime64[ns, UTC]")
+    return (
+        pd.concat(values, ignore_index=True).drop_duplicates().sort_values().reset_index(drop=True)
+    )
+
+
+def pair_dates(features_by_pair: dict[str, pd.DataFrame], pair: str) -> pd.Series:
+    df = features_by_pair.get(pair)
+    if df is None or df.empty or "date" not in df.columns:
+        return pd.Series(dtype="datetime64[ns, UTC]")
+    return pd.to_datetime(df["date"], utc=True).dropna().sort_values()
+
+
+def fold_pair_coverage(
+    features_by_pair: dict[str, pd.DataFrame],
+    pairs: list[str],
+    fold: TemporalFold,
+) -> dict[str, Any]:
+    available_pairs: list[str] = []
+    for pair in pairs:
+        dates = pair_dates(features_by_pair, pair)
+        if dates.empty:
+            continue
+        in_test = (dates >= fold.test_start) & (dates < fold.test_end)
+        if bool(in_test.any()):
+            available_pairs.append(pair)
+
+    missing_pairs = [pair for pair in pairs if pair not in set(available_pairs)]
+    universe_pair_count = len(pairs)
+    available_pair_count = len(available_pairs)
+    return {
+        "available_pairs": available_pairs,
+        "missing_pairs": missing_pairs,
+        "available_pair_count": available_pair_count,
+        "universe_pair_count": universe_pair_count,
+        "pair_coverage_rate": (
+            available_pair_count / universe_pair_count if universe_pair_count else 0.0
+        ),
+    }
+
+
 def add_fold_metadata(
     frame: pd.DataFrame,
     fold: TemporalFold,
@@ -221,6 +278,7 @@ def oos_summary_row(
     fold: TemporalFold,
     pair_universe_version: str,
     account_rules_version: str,
+    pair_coverage: dict[str, Any],
 ) -> dict[str, Any]:
     row = dict(summary)
     row.update(
@@ -234,6 +292,11 @@ def oos_summary_row(
             "account_rules_version": account_rules_version,
             "account_simulator_version": ACCOUNT_SIMULATOR_VERSION,
             "account_oos_version": ACCOUNT_OOS_VERSION,
+            "available_pairs": pair_coverage["available_pairs"],
+            "missing_pairs": pair_coverage["missing_pairs"],
+            "available_pair_count": pair_coverage["available_pair_count"],
+            "universe_pair_count": pair_coverage["universe_pair_count"],
+            "pair_coverage_rate": pair_coverage["pair_coverage_rate"],
             "positive_fold": float(summary.get("total_return", 0.0)) > 0.0,
         }
     )
@@ -265,6 +328,8 @@ def aggregate_oos(summary: pd.DataFrame) -> pd.DataFrame:
         worst_oos_return=("total_return", "min"),
         total_oos_trades=("trades", "sum"),
         median_oos_trades=("trades", "median"),
+        min_pair_coverage_rate=("pair_coverage_rate", "min"),
+        median_pair_coverage_rate=("pair_coverage_rate", "median"),
     )
     grouped["positive_fold_rate"] = grouped["positive_folds"] / grouped["folds"].replace(0, np.nan)
     grouped["account_oos_version"] = ACCOUNT_OOS_VERSION
@@ -281,6 +346,7 @@ def simulate_oos_for_edge(
     folds: list[TemporalFold],
     pair_universe_version: str,
     account_rules_version: str,
+    pair_coverages: dict[int, dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[pd.DataFrame], list[pd.DataFrame], list[pd.DataFrame]]:
     summaries: list[dict[str, Any]] = []
     trades: list[pd.DataFrame] = []
@@ -289,9 +355,15 @@ def simulate_oos_for_edge(
 
     edge_signals = signals[(signals["edge"] == edge) & (signals["timeframe"] == timeframe)].copy()
     for fold in folds:
+        pair_coverage = pair_coverages[fold.fold]
+        available_pairs = pair_coverage["available_pairs"]
+        fold_features = {
+            pair: features_by_pair[pair] for pair in available_pairs if pair in features_by_pair
+        }
+        fold_signals = edge_signals[edge_signals["pair"].isin(available_pairs)].copy()
         result = simulate_account(
-            signals=edge_signals,
-            features_by_pair=features_by_pair,
+            signals=fold_signals,
+            features_by_pair=fold_features,
             config=config,
             run_id=run_id,
             edge=edge,
@@ -305,6 +377,7 @@ def simulate_oos_for_edge(
                 fold,
                 pair_universe_version,
                 account_rules_version,
+                pair_coverage,
             )
         )
         trades.append(add_fold_metadata(result.trades, fold))
@@ -342,8 +415,9 @@ def run_account_oos(
 
     for timeframe in timeframes:
         features = load_features(storage, exchange, pairs, timeframe)
-        fold_dates = common_feature_dates(features)
+        fold_dates = all_feature_dates(features)
         folds = build_temporal_folds(fold_dates, train_months, test_months, step_months)
+        pair_coverages = {fold.fold: fold_pair_coverage(features, pairs, fold) for fold in folds}
         tf_signals = signals[signals["timeframe"] == timeframe].copy()
         edges = sorted(tf_signals["edge"].dropna().unique().tolist())
         for edge in edges:
@@ -357,6 +431,7 @@ def run_account_oos(
                 folds=folds,
                 pair_universe_version=pair_universe_version,
                 account_rules_version=account_rules_version,
+                pair_coverages=pair_coverages,
             )
             all_summaries.extend(summaries)
             all_trades.extend(trades)

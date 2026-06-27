@@ -5,7 +5,8 @@
     "require_account_validation_passed": true,
     "require_account_oos_validation_passed": true,
     "min_oos_folds": 5,
-    "min_observation_months": 36
+    "min_observation_months": 36,
+    "min_pair_coverage_rate": 0.60
   },
   "candidate": {
     "min_full_trades": 80,
