@@ -170,7 +170,7 @@ Casos cubiertos:
 ## Validaciones locales
 
 - Tests:
-  - `52 passed`
+  - `56 passed`
 - Ruff:
   - `All checks passed`
 - Python compile:
@@ -185,10 +185,136 @@ Casos cubiertos:
 - Account Candidate v1 implementado localmente.
 - Integracion al research pipeline implementada.
 - DuckDB y dashboard actualizados.
-- Falta desplegar al homeserver y confirmar con la corrida remota actual que devuelve:
-  - `status = success`
-  - `candidate_count = 0`
-  - `insufficient_history_count > 0`
+
+## Bugs detectados durante el despliegue
+
+- Manifest contaminado por artefactos de otro run:
+  - Un run fallido temprano heredo `account_candidate_status=success` desde un JSON global anterior.
+  - Se corrigio `run_manager.py` para leer status JSON solo si `run_id` coincide.
+  - Se agrego `tests/test_run_manager.py`.
+
+- Evaluacion historica usando JSON globales:
+  - `account_candidate` podia evaluar un `run_id` historico con validaciones globales sobrescritas por otro run.
+  - Se corrigio para preferir `results/runs/<run_id>/...` y usar global solo si el `run_id` coincide.
+
+- `account_candidate` dentro del pipeline veia el manifest en `running`:
+  - El pipeline ejecuta account candidate antes de `run_manager complete --status success`.
+  - Standalone sigue exigiendo `success`.
+  - El pipeline ahora pasa `--allow-running-run` explicitamente.
+  - Se agrego test para exigir ese flag.
+
+## Despliegue remoto
+
+Commits relevantes:
+
+- `0f87afb56` - Add account candidate gate.
+- `fb742de72` - Prevent stale run statuses in manifests.
+- `884f75915` - Use run snapshots for account candidate inputs.
+- `2faad6352` - Allow account candidate during active pipeline run.
+
+Paquete final desplegado:
+
+- `/tmp/adrian_quant_account_candidate.tgz`
+- SHA256:
+  - `ea49dcd53ce9f41bed517f239aaad622cecf46988b454c158268aeb82089d920`
+- Commit registrado en homeserver:
+  - `2faad635237d7e9bd2e4bb4e849f00e7c15d5d4b`
+- Backup final remoto:
+  - `/tmp/adrian_quant_backup_20260627T015510Z`
+
+Validaciones remotas:
+
+- Compilacion Python:
+  - OK
+- Bash `-n`:
+  - OK
+- Tests remotos:
+  - `56 passed`
+
+Research manual remoto con descarga activa:
+
+- `run_id`: `20260627T013209Z-nogit-1c896a`
+- `status`: `success`
+- `data_quality_status`: `passed`
+- `account_validation_status`: `passed`
+- `account_oos_validation_status`: `passed`
+- `account_candidate_status`: `success`
+- `total_seconds`: `1151`
+- `download_seconds`: `27`
+- `features_seconds`: `33`
+- `edge_engine_seconds`: `49`
+- `walk_forward_seconds`: `9`
+- `account_simulator_seconds`: `586`
+- `account_oos_seconds`: `430`
+- `account_candidate_seconds`: `2`
+- `peak_memory_mb`: `3.336`
+
+Data quality remoto:
+
+- `files_checked`: `10`
+- `stale_pairs`: `[]`
+- `incomplete_pairs`: `[]`
+- `missing_candles`: `0`
+- `nonfinite_ohlcv`: `0`
+- `max_lag_bars`: `0`
+
+Account validation remoto:
+
+- `status`: `passed`
+- `negative_cash_rows`: `0`
+- `equity_identity_failures`: `0`
+- `exposure_violations`: `0`
+- `position_limit_violations`: `0`
+- `duplicate_trade_ids`: `0`
+- `nonfinite_rows`: `0`
+- `trades_checked`: `7824`
+
+Account OOS validation remoto:
+
+- `status`: `passed`
+- `folds_checked`: `24`
+- `trades_outside_test`: `0`
+- `duplicate_folds`: `0`
+- `aggregate_mismatches`: `0`
+- `mixed_run_ids`: `0`
+
+Account candidate remoto:
+
+- `status`: `success`
+- `rows`: `8`
+- `eligible_candidates`: `0`
+- `candidate_count`: `0`
+- `watch_count`: `2`
+- `reject_count`: `6`
+- `insufficient_history_count`: `8`
+
+Configuraciones en `watch` pero no elegibles por falta de historico:
+
+- `ema_trend_20_50_100 4h`
+  - full PF: `1.126638`
+  - OOS folds: `3`
+  - OOS positive fold rate: `0.666667`
+  - OOS median PF: `1.131329`
+  - OOS trades: `288`
+- `volatility_expansion_20 4h`
+  - full PF: `1.065653`
+  - OOS folds: `3`
+  - OOS positive fold rate: `0.666667`
+  - OOS median PF: `1.174805`
+  - OOS trades: `118`
+
+Estado final de servicios:
+
+- `adrian-quant-lab.service`: `active`
+- `adrian-quant-ingest.timer`: `active`
+- `adrian-quant-research.timer`: `active`
+- `adrian-quant-deep.timer`: `inactive`
+- `adrian-quant-pipeline.timer`: `inactive`
+- `adrian-quant-promotion.timer`: `inactive`
+- Dashboard:
+  - `HTTP/1.1 200 OK`
+- Paper containers:
+  - ninguno encontrado con `freqtrade-paper-promoted`
 
 ## No implementado todavia
 
