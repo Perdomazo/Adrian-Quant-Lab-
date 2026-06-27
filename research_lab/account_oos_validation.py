@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from research_lab.account_oos import ACCOUNT_OOS_VERSION, aggregate_oos
+from research_lab.profile_paths import LEGACY_PROFILE, profile_results_dir, validate_profile
 from research_lab.run_manager import atomic_write_json
 
 
@@ -163,8 +164,19 @@ def aggregate_mismatches(summary: pd.DataFrame, aggregate: pd.DataFrame) -> int:
     return mismatches
 
 
-def validate_account_oos_outputs(storage: Path, run_id: str | None = None) -> dict[str, Any]:
-    results = storage / "results"
+def validate_account_oos_outputs(
+    storage: Path,
+    run_id: str | None = None,
+    profile: str = LEGACY_PROFILE,
+) -> dict[str, Any]:
+    active_profile = validate_profile(profile)
+    results = profile_results_dir(storage, active_profile)
+    if active_profile == LEGACY_PROFILE:
+        legacy_results = storage / "results"
+        if all((legacy_results / name).exists() for name in OOS_FILES.values()):
+            results = legacy_results
+        elif not results.exists():
+            results = legacy_results
     paths = {key: results / name for key, name in OOS_FILES.items()}
     missing_artifacts = [path.name for path in paths.values() if not path.exists()]
 
@@ -181,6 +193,7 @@ def validate_account_oos_outputs(storage: Path, run_id: str | None = None) -> di
     report = {
         "status": "passed",
         "run_id": run_id,
+        "execution_profile": active_profile,
         "account_oos_version": ACCOUNT_OOS_VERSION,
         "account_oos_validation_version": ACCOUNT_OOS_VALIDATION_VERSION,
         "folds_checked": len(summary),
@@ -225,12 +238,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Validate account OOS artifacts")
     parser.add_argument("--storage", default="research_lab/storage", type=Path)
     parser.add_argument("--run-id", default=None)
+    parser.add_argument("--profile", default=LEGACY_PROFILE, choices=["research", "freqtrade"])
     parser.add_argument("--fail-on-error", action="store_true")
     args = parser.parse_args()
 
-    report = validate_account_oos_outputs(args.storage, args.run_id)
-    out_path = args.storage / "results" / "account_oos_validation.json"
+    report = validate_account_oos_outputs(args.storage, args.run_id, args.profile)
+    active_profile = report["execution_profile"]
+    out_path = profile_results_dir(args.storage, active_profile) / "account_oos_validation.json"
     atomic_write_json(out_path, report)
+    if active_profile == LEGACY_PROFILE:
+        atomic_write_json(args.storage / "results" / "account_oos_validation.json", report)
     print(json.dumps(report, indent=2, sort_keys=True))
     if args.fail_on_error and report["status"] != "passed":
         raise SystemExit(1)

@@ -8,7 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from research_lab.account_simulator import load_account_config
+from research_lab.account_simulator import load_account_config, validate_cli_profile
+from research_lab.profile_paths import LEGACY_PROFILE, profile_results_dir
 from research_lab.run_manager import atomic_write_json
 
 
@@ -97,9 +98,13 @@ def validate_account_outputs(
     storage: Path,
     rules_path: Path,
     run_id: str | None = None,
+    profile: str | None = None,
 ) -> dict[str, Any]:
     config, rules_version, rules_hash = load_account_config(rules_path)
-    results = storage / "results"
+    active_profile = validate_cli_profile(config, profile or config.execution_profile)
+    results = profile_results_dir(storage, active_profile)
+    if active_profile == LEGACY_PROFILE and not results.exists():
+        results = storage / "results"
     trades = read_parquet(results / "account_trades.parquet")
     equity = read_parquet(results / "account_equity.parquet")
     summary = read_parquet(results / "account_summary.parquet")
@@ -208,6 +213,10 @@ def validate_account_outputs(
         "version": ACCOUNT_VALIDATION_VERSION,
         "status": "passed",
         "run_id": run_id,
+        "execution_profile": active_profile,
+        "execution_model": config.execution_model,
+        "allocation_policy": config.allocation_policy,
+        "cost_model_version": config.cost_model_version,
         "rules_version": rules_version,
         "rules_hash": rules_hash,
         "negative_cash_rows": negative_cash_rows,
@@ -248,13 +257,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Validate account simulator outputs")
     parser.add_argument("--storage", default="research_lab/storage", type=Path)
     parser.add_argument("--rules", default="research_lab/config/account_rules.json", type=Path)
+    parser.add_argument("--profile", default=None, choices=["research", "freqtrade"])
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--fail-on-error", action="store_true")
     args = parser.parse_args()
 
-    report = validate_account_outputs(args.storage, args.rules, args.run_id)
-    out_path = args.storage / "results" / "account_validation.json"
+    report = validate_account_outputs(args.storage, args.rules, args.run_id, args.profile)
+    active_profile = report["execution_profile"]
+    out_dir = profile_results_dir(args.storage, active_profile)
+    out_path = out_dir / "account_validation.json"
     atomic_write_json(out_path, report)
+    if active_profile == LEGACY_PROFILE:
+        atomic_write_json(args.storage / "results" / "account_validation.json", report)
     print(json.dumps(report, indent=2, sort_keys=True))
     if args.fail_on_error and report["status"] != "passed":
         raise SystemExit(1)

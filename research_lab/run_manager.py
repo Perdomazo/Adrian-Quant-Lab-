@@ -35,6 +35,9 @@ RUN_FILES = [
     "account_oos_validation.json",
     "account_candidate_summary.parquet",
     "account_candidate_decision.json",
+    "profile_comparison_summary.parquet",
+    "profile_trade_overlap.parquet",
+    "profile_comparison.json",
     "deep_validation_summary.parquet",
     "deep_validation_manifest.json",
 ]
@@ -245,7 +248,7 @@ def start_run(root: Path, storage: Path, run_id: str) -> None:
     atomic_write_json(latest_dir / "run_manifest.json", payload)
 
 
-def update_run(
+def update_run(  # noqa: C901
     root: Path, storage: Path, run_id: str, status: str, error: str | None = None
 ) -> None:
     payload = load_manifest(storage, run_id) or base_manifest(root, storage, run_id, status)
@@ -321,6 +324,52 @@ def update_run(
     else:
         payload.pop("account_candidate_status", None)
 
+    execution_profiles: dict[str, Any] = {}
+    profiles_dir = storage / "results" / "profiles"
+    profile_dirs = sorted(profiles_dir.glob("*")) if profiles_dir.exists() else []
+    for profile_dir in profile_dirs:
+        if not profile_dir.is_dir():
+            continue
+        profile = profile_dir.name
+        account_validation_report = read_json_for_run(
+            profile_dir / "account_validation.json", run_id
+        )
+        account_oos_validation_report = read_json_for_run(
+            profile_dir / "account_oos_validation.json", run_id
+        )
+        account_candidate_decision = read_json_for_run(
+            profile_dir / "account_candidate_decision.json", run_id
+        )
+        profile_payload: dict[str, Any] = {}
+        if account_validation_report:
+            profile_payload["account_validation_status"] = account_validation_report.get("status")
+            profile_payload["account_rules_version"] = account_validation_report.get(
+                "rules_version"
+            )
+            profile_payload["account_rules_hash"] = account_validation_report.get("rules_hash")
+            profile_payload["execution_model"] = account_validation_report.get("execution_model")
+            profile_payload["allocation_policy"] = account_validation_report.get(
+                "allocation_policy"
+            )
+            profile_payload["cost_model_version"] = account_validation_report.get(
+                "cost_model_version"
+            )
+        if account_oos_validation_report:
+            profile_payload["account_oos_validation_status"] = account_oos_validation_report.get(
+                "status"
+            )
+        if account_candidate_decision:
+            profile_payload["account_candidate_status"] = account_candidate_decision.get("status")
+            profile_payload["candidate_count"] = account_candidate_decision.get("candidate_count")
+            profile_payload["watch_count"] = account_candidate_decision.get("watch_count")
+            profile_payload["reject_count"] = account_candidate_decision.get("reject_count")
+        if profile_payload:
+            execution_profiles[profile] = profile_payload
+    if execution_profiles:
+        payload["execution_profiles"] = execution_profiles
+    else:
+        payload.pop("execution_profiles", None)
+
     atomic_write_json(manifest_path(storage, run_id), payload)
     latest_dir = storage / "results" / "latest"
     latest_dir.mkdir(parents=True, exist_ok=True)
@@ -342,6 +391,18 @@ def snapshot_results(storage: Path, run_id: str) -> None:
             tmp = target_dir / f".{name}.tmp-{os.getpid()}"
             target = target_dir / name
             shutil.copy2(source, tmp)
+            tmp.replace(target)
+
+    profiles = results / "profiles"
+    if profiles.exists():
+        for target_dir in [run_dir, latest]:
+            target = target_dir / "profiles"
+            tmp = target_dir / f".profiles.tmp-{os.getpid()}"
+            if tmp.exists():
+                shutil.rmtree(tmp)
+            shutil.copytree(profiles, tmp)
+            if target.exists():
+                shutil.rmtree(target)
             tmp.replace(target)
 
 

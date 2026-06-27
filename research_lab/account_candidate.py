@@ -10,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 
+from research_lab.profile_paths import LEGACY_PROFILE, profile_results_dir, validate_profile
 from research_lab.run_manager import atomic_write_json, file_exists_hash, json_version
 from research_lab.warehouse import refresh_duckdb, write_parquet_atomic
 
@@ -27,6 +28,10 @@ SUMMARY_COLUMNS = [
     "pair_universe_hash",
     "account_rules_version",
     "account_rules_hash",
+    "execution_profile",
+    "execution_model",
+    "allocation_policy",
+    "cost_model_version",
     "account_decision_rules_version",
     "account_decision_rules_hash",
     "account_simulator_version",
@@ -66,8 +71,15 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def read_json_artifact(results: Path, run_id: str, name: str) -> dict[str, Any]:
-    for path in [results / "runs" / run_id / name, results / name]:
+def read_json_artifact(results: Path, run_id: str, name: str, profile: str) -> dict[str, Any]:
+    profile_dir = profile_results_dir(results.parent, profile)
+    paths = [
+        results / "runs" / run_id / "profiles" / profile / name,
+        profile_dir / name,
+    ]
+    if profile == LEGACY_PROFILE:
+        paths.extend([results / "runs" / run_id / name, results / name])
+    for path in paths:
         payload = read_json(path)
         if payload and str(payload.get("run_id")) == str(run_id):
             return payload
@@ -80,11 +92,17 @@ def read_parquet(path: Path) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-def read_parquet_artifact(results: Path, run_id: str, name: str) -> pd.DataFrame:
-    run_path = results / "runs" / run_id / name
-    if run_path.exists():
-        return read_parquet(run_path)
-    return read_parquet(results / name)
+def read_parquet_artifact(results: Path, run_id: str, name: str, profile: str) -> pd.DataFrame:
+    paths = [
+        results / "runs" / run_id / "profiles" / profile / name,
+        profile_results_dir(results.parent, profile) / name,
+    ]
+    if profile == LEGACY_PROFILE:
+        paths.extend([results / "runs" / run_id / name, results / name])
+    for path in paths:
+        if path.exists():
+            return read_parquet(path)
+    return pd.DataFrame()
 
 
 def load_rules(path: Path) -> tuple[dict[str, Any], str, str | None]:
@@ -267,21 +285,35 @@ def build_candidate_rows(  # noqa: C901
     rules_hash: str | None,
     pair_universe: Path,
     run_id: str,
+    profile: str = LEGACY_PROFILE,
     allow_running_run: bool = False,
 ) -> pd.DataFrame:
+    active_profile = validate_profile(profile)
     results = storage / "results"
     manifest = read_json(results / "latest" / "run_manifest.json")
     if manifest.get("run_id") != run_id:
         run_manifest = read_json(results / "runs" / run_id / "run_manifest.json")
         if run_manifest:
             manifest = run_manifest
-    data_quality = read_json_artifact(results, run_id, "data_quality_report.json")
-    account_validation = read_json_artifact(results, run_id, "account_validation.json")
-    account_oos_validation = read_json_artifact(results, run_id, "account_oos_validation.json")
-    account_summary = read_parquet_artifact(results, run_id, "account_summary.parquet")
-    account_equity = read_parquet_artifact(results, run_id, "account_equity.parquet")
-    account_oos = read_parquet_artifact(results, run_id, "account_oos_aggregate.parquet")
-    account_oos_summary = read_parquet_artifact(results, run_id, "account_oos_summary.parquet")
+    data_quality = read_json_artifact(results, run_id, "data_quality_report.json", LEGACY_PROFILE)
+    account_validation = read_json_artifact(
+        results, run_id, "account_validation.json", active_profile
+    )
+    account_oos_validation = read_json_artifact(
+        results, run_id, "account_oos_validation.json", active_profile
+    )
+    account_summary = read_parquet_artifact(
+        results, run_id, "account_summary.parquet", active_profile
+    )
+    account_equity = read_parquet_artifact(
+        results, run_id, "account_equity.parquet", active_profile
+    )
+    account_oos = read_parquet_artifact(
+        results, run_id, "account_oos_aggregate.parquet", active_profile
+    )
+    account_oos_summary = read_parquet_artifact(
+        results, run_id, "account_oos_summary.parquet", active_profile
+    )
     if run_id:
         for frame_name, frame in [("summary", account_summary), ("oos", account_oos)]:
             if not frame.empty and "run_id" in frame.columns:
@@ -310,8 +342,10 @@ def build_candidate_rows(  # noqa: C901
     source_commit = manifest.get("source_commit")
     data_hash = manifest.get("data_hash")
     features_version = str(manifest.get("features_version", "unknown"))
-    account_rules_version = str(manifest.get("account_rules_version", "unknown"))
-    account_rules_hash = manifest.get("account_rules_hash")
+    account_rules_version = str(
+        account_validation.get("rules_version") or manifest.get("account_rules_version", "unknown")
+    )
+    account_rules_hash = account_validation.get("rules_hash") or manifest.get("account_rules_hash")
     account_simulator_version = str(manifest.get("account_simulator_version", "unknown"))
 
     rows: list[dict[str, Any]] = []
@@ -335,6 +369,16 @@ def build_candidate_rows(  # noqa: C901
             "pair_universe_hash": pair_universe_hash,
             "account_rules_version": account_rules_version,
             "account_rules_hash": account_rules_hash,
+            "execution_profile": active_profile,
+            "execution_model": item.get(
+                "execution_model", account_validation.get("execution_model")
+            ),
+            "allocation_policy": item.get(
+                "allocation_policy", account_validation.get("allocation_policy")
+            ),
+            "cost_model_version": item.get(
+                "cost_model_version", account_validation.get("cost_model_version")
+            ),
             "account_simulator_version": account_simulator_version,
             "features_version": features_version,
         }
@@ -349,6 +393,10 @@ def build_candidate_rows(  # noqa: C901
             "pair_universe_hash": pair_universe_hash,
             "account_rules_version": account_rules_version,
             "account_rules_hash": account_rules_hash,
+            "execution_profile": active_profile,
+            "execution_model": payload["execution_model"],
+            "allocation_policy": payload["allocation_policy"],
+            "cost_model_version": payload["cost_model_version"],
             "account_decision_rules_version": rules_version,
             "account_decision_rules_hash": rules_hash,
             "account_simulator_version": account_simulator_version,
@@ -451,8 +499,10 @@ def add_history_metrics(summary: pd.DataFrame, history: pd.DataFrame) -> pd.Data
     return out
 
 
-def update_history(storage: Path, summary: pd.DataFrame, manifest: dict[str, Any]) -> pd.DataFrame:
-    path = storage / "results" / "account_candidate_history.parquet"
+def update_history(
+    storage: Path, summary: pd.DataFrame, manifest: dict[str, Any], profile: str
+) -> pd.DataFrame:
+    path = profile_results_dir(storage, profile) / "account_candidate_history.parquet"
     existing = read_parquet(path)
     history_cols = [
         "candidate_id",
@@ -475,6 +525,8 @@ def update_history(storage: Path, summary: pd.DataFrame, manifest: dict[str, Any
         history = pd.concat([existing, rows], ignore_index=True) if not existing.empty else rows
         history = history.drop_duplicates(["candidate_id", "run_id"], keep="last")
     write_parquet_atomic(history, path)
+    if profile == LEGACY_PROFILE:
+        write_parquet_atomic(history, storage / "results" / "account_candidate_history.parquet")
     return history
 
 
@@ -484,8 +536,10 @@ def run_account_candidate(
     rules_path: Path,
     pair_universe: Path,
     run_id: str,
+    profile: str = LEGACY_PROFILE,
     allow_running_run: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, Any], pd.DataFrame]:
+    active_profile = validate_profile(profile)
     rules, rules_version, rules_hash = load_rules(rules_path)
     results = storage / "results"
     manifest = read_json(results / "latest" / "run_manifest.json")
@@ -502,15 +556,19 @@ def run_account_candidate(
         rules_hash,
         pair_universe,
         run_id,
+        active_profile,
         allow_running_run,
     )
-    history = update_history(storage, summary, manifest)
+    history = update_history(storage, summary, manifest, active_profile)
     summary = add_history_metrics(summary, history)
 
-    write_parquet_atomic(summary, results / "account_candidate_summary.parquet")
+    out_dir = profile_results_dir(storage, active_profile)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    write_parquet_atomic(summary, out_dir / "account_candidate_summary.parquet")
     decision = {
         "status": "success",
         "run_id": run_id,
+        "execution_profile": active_profile,
         "account_candidate_version": ACCOUNT_CANDIDATE_VERSION,
         "account_decision_rules_version": rules_version,
         "account_decision_rules_hash": rules_hash,
@@ -534,7 +592,10 @@ def run_account_candidate(
         "rows": len(summary),
         "generated_at": utc_now(),
     }
-    atomic_write_json(results / "account_candidate_decision.json", decision)
+    atomic_write_json(out_dir / "account_candidate_decision.json", decision)
+    if active_profile == LEGACY_PROFILE:
+        write_parquet_atomic(summary, results / "account_candidate_summary.parquet")
+        atomic_write_json(results / "account_candidate_decision.json", decision)
     refresh_duckdb(storage)
     return summary, decision, history
 
@@ -554,6 +615,7 @@ def main() -> None:
         type=Path,
     )
     parser.add_argument("--run-id", default=os.environ.get("RUN_ID"))
+    parser.add_argument("--profile", default=LEGACY_PROFILE, choices=["research", "freqtrade"])
     parser.add_argument(
         "--allow-running-run",
         action="store_true",
@@ -574,6 +636,7 @@ def main() -> None:
         args.rules,
         args.pair_universe,
         str(run_id),
+        args.profile,
         args.allow_running_run,
     )
     print(json.dumps(decision, indent=2, sort_keys=True))

@@ -4,19 +4,85 @@ import argparse
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+import shutil
+from dataclasses import MISSING, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from research_lab.profile_paths import LEGACY_PROFILE, profile_results_dir, validate_profile
 from research_lab.warehouse import feature_path, refresh_duckdb, write_parquet_atomic
 
 
 ACCOUNT_SIMULATOR_VERSION = "account-sim-v2"
 MAX_FINITE_PROFIT_FACTOR = 999.0
 ALLOCATION_CAPACITY_BUFFER = 0.999
+
+TRADE_COLUMNS = [
+    "trade_id",
+    "position_id",
+    "run_id",
+    "edge",
+    "edge_version",
+    "pair",
+    "timeframe",
+    "signal_date",
+    "entry_date",
+    "exit_date",
+    "entry_price",
+    "exit_price",
+    "quantity",
+    "stake",
+    "entry_fee",
+    "exit_fee",
+    "fees_total",
+    "stop_price",
+    "take_profit_price",
+    "entry_stake_exposure",
+    "entry_pair_stake_exposure",
+    "bars_held",
+    "exit_reason",
+    "pnl",
+    "return_on_stake",
+    "execution_profile",
+    "execution_model",
+    "allocation_policy",
+    "pair_priority",
+    "allocation_sequence",
+    "cost_model_version",
+]
+
+REJECTION_COLUMNS = [
+    "run_id",
+    "edge",
+    "pair",
+    "timeframe",
+    "signal_date",
+    "execution_date",
+    "reason",
+    "desired_stake",
+    "available_cash",
+    "current_exposure",
+    "open_positions",
+    "execution_profile",
+    "execution_model",
+    "allocation_policy",
+    "pair_priority",
+    "allocation_sequence",
+    "cost_model_version",
+]
+
+
+def ensure_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    if df.empty and len(df.columns) == 0:
+        return pd.DataFrame(columns=columns)
+    out = df.copy()
+    for column in columns:
+        if column not in out.columns:
+            out[column] = pd.NA
+    return out[columns + [column for column in out.columns if column not in columns]]
 
 
 @dataclass(frozen=True)
@@ -41,18 +107,34 @@ class AccountConfig:
     intrabar_policy: str
     allocation_policy: str
     end_of_data_policy: str
+    execution_profile: str = "research"
+    execution_model: str = "conservative_intrabar_v1"
+    cost_model_version: str = "inline-costs"
+    pair_priority_source: str = "pair_universe"
+    pair_universe: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> AccountConfig:
-        required = set(cls.__dataclass_fields__)
-        allowed = required | {"version"}
+        fields = cls.__dataclass_fields__
+        required = {
+            name
+            for name, item in fields.items()
+            if item.default is MISSING and item.default_factory is MISSING
+        }
+        allowed = set(fields) | {"version"}
         missing = sorted(required - set(payload))
         extra = sorted(set(payload) - allowed)
         if missing:
             raise ValueError(f"Missing account rule fields: {', '.join(missing)}")
         if extra:
             raise ValueError(f"Unknown account rule fields: {', '.join(extra)}")
-        values = {field_name: payload[field_name] for field_name in cls.__dataclass_fields__}
+        values = {
+            field_name: payload[field_name]
+            for field_name in fields
+            if field_name in payload and field_name != "pair_universe"
+        }
+        if "pair_universe" in payload:
+            values["pair_universe"] = tuple(str(pair) for pair in payload["pair_universe"])
         config = cls(**values)
         config.validate()
         return config
@@ -105,10 +187,27 @@ class AccountConfig:
             raise ValueError("take-profit distance bounds are invalid")
         if self.stop_mult <= 0 or self.take_profit_mult <= 0:
             raise ValueError("stop_mult and take_profit_mult must be positive")
+        if validate_profile(self.execution_profile) != self.execution_profile:
+            raise ValueError("execution_profile is invalid")
         if self.intrabar_policy != "stop_first":
             raise ValueError("Only intrabar_policy=stop_first is supported")
-        if self.allocation_policy != "pro_rata":
-            raise ValueError("Only allocation_policy=pro_rata is supported")
+        valid_allocation = {"pro_rata", "pairlist_sequential"}
+        if self.allocation_policy not in valid_allocation:
+            raise ValueError("allocation_policy must be pro_rata or pairlist_sequential")
+        if self.execution_profile == "research":
+            if self.allocation_policy != "pro_rata":
+                raise ValueError("research profile requires allocation_policy=pro_rata")
+            if self.execution_model != "conservative_intrabar_v1":
+                raise ValueError(
+                    "research profile requires execution_model=conservative_intrabar_v1"
+                )
+        if self.execution_profile == "freqtrade":
+            if self.allocation_policy != "pairlist_sequential":
+                raise ValueError("freqtrade profile requires allocation_policy=pairlist_sequential")
+            if self.execution_model != "freqtrade_backtest_v1":
+                raise ValueError("freqtrade profile requires execution_model=freqtrade_backtest_v1")
+            if max(self.entry_slippage, self.exit_slippage, self.stop_slippage) != 0:
+                raise ValueError("freqtrade profile requires zero slippage")
         if self.end_of_data_policy != "mark_to_market":
             raise ValueError("Only end_of_data_policy=mark_to_market is supported")
 
@@ -134,6 +233,12 @@ class Position:
     max_hold: int
     entry_stake_exposure: float
     entry_pair_stake_exposure: float
+    allocation_sequence: int
+    pair_priority: int
+    execution_profile: str
+    execution_model: str
+    allocation_policy: str
+    cost_model_version: str
     bars_held: int = 0
 
 
@@ -157,6 +262,12 @@ class PendingEntry:
     signal_index: int
     risk: float
     max_hold: int
+    allocation_sequence: int = -1
+    pair_priority: int = 999999
+    execution_profile: str = "research"
+    execution_model: str = "conservative_intrabar_v1"
+    allocation_policy: str = "pro_rata"
+    cost_model_version: str = "inline-costs"
 
 
 @dataclass
@@ -192,6 +303,32 @@ def parse_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def load_pair_universe(path: Path | None) -> tuple[str, list[str]]:
+    if path is None or not path.exists():
+        return "unknown", []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return str(payload.get("version", "unknown")), [str(pair) for pair in payload.get("pairs", [])]
+
+
+def with_pair_universe(config: AccountConfig, pairs: list[str]) -> AccountConfig:
+    return AccountConfig(**{**config.__dict__, "pair_universe": tuple(pairs)})
+
+
+def validate_cli_profile(config: AccountConfig, profile: str) -> str:
+    requested = validate_profile(profile)
+    if config.execution_profile != requested:
+        raise ValueError(
+            f"CLI profile {requested} does not match config execution_profile "
+            f"{config.execution_profile}"
+        )
+    return requested
+
+
+def pair_priority_map(config: AccountConfig, pairs: list[str]) -> dict[str, int]:
+    source = list(config.pair_universe) or list(pairs)
+    return {pair: idx for idx, pair in enumerate(source)}
+
+
 def position_key(edge: str, pair: str, timeframe: str) -> str:
     return f"{edge}|{pair}|{timeframe}"
 
@@ -208,6 +345,12 @@ def pending_priority(pending: PendingEntry) -> str:
         ]
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def pending_sort_key(pending: PendingEntry, config: AccountConfig) -> tuple[Any, ...]:
+    if config.allocation_policy == "pairlist_sequential":
+        return (pending.execute_date, pending.pair_priority, pending.signal_date, pending.pair)
+    return (pending_priority(pending),)
 
 
 def prepare_features(features: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
@@ -409,6 +552,12 @@ def record_rejection(
             "available_cash": float(state.cash),
             "current_exposure": float(current_exposure),
             "open_positions": len(state.positions),
+            "execution_profile": pending.execution_profile,
+            "execution_model": pending.execution_model,
+            "allocation_policy": pending.allocation_policy,
+            "pair_priority": pending.pair_priority,
+            "allocation_sequence": pending.allocation_sequence,
+            "cost_model_version": pending.cost_model_version,
         }
     )
 
@@ -458,6 +607,12 @@ def close_position_with_config(
             "exit_reason": exit_reason,
             "pnl": pnl,
             "return_on_stake": pnl / position.stake if position.stake else np.nan,
+            "execution_profile": position.execution_profile,
+            "execution_model": position.execution_model,
+            "allocation_policy": position.allocation_policy,
+            "pair_priority": position.pair_priority,
+            "allocation_sequence": position.allocation_sequence,
+            "cost_model_version": position.cost_model_version,
         }
     )
 
@@ -570,6 +725,8 @@ def simulate_account(  # noqa: C901
     entries_opened = 0
     max_concurrent_positions = 0
     next_position_id = 1
+    next_allocation_sequence = 1
+    priorities = pair_priority_map(config, list(features.keys()))
 
     entry_signals = (
         signals[signals.get("signal_type", "") == "entry"] if not signals.empty else pd.DataFrame()
@@ -612,7 +769,7 @@ def simulate_account(  # noqa: C901
         ]
         candidates: list[tuple[PendingEntry, float, dict[str, float], Any]] = []
         current_exposure = market_value(state.positions, rows_by_pair, last_close, date, "open")
-        for pending in sorted(due_entries, key=pending_priority):
+        for pending in sorted(due_entries, key=lambda item: pending_sort_key(item, config)):
             row = current_rows.get(pending.pair)
             if row is None:
                 next_date = next_bar_date(features, pending.pair, date)
@@ -627,6 +784,12 @@ def simulate_account(  # noqa: C901
                         signal_index=pending.signal_index,
                         risk=pending.risk,
                         max_hold=pending.max_hold,
+                        allocation_sequence=pending.allocation_sequence,
+                        pair_priority=pending.pair_priority,
+                        execution_profile=pending.execution_profile,
+                        execution_model=pending.execution_model,
+                        allocation_policy=pending.allocation_policy,
+                        cost_model_version=pending.cost_model_version,
                     )
                     continue
                 record_rejection(
@@ -651,6 +814,107 @@ def simulate_account(  # noqa: C901
                 continue
             candidates.append((pending, desired_stake, details, row))
 
+        if candidates and config.allocation_policy == "pairlist_sequential":
+            candidates = sorted(candidates, key=lambda item: pending_sort_key(item[0], config))
+            for pending, _, _, row in candidates:
+                current_exposure = market_value(
+                    state.positions, rows_by_pair, last_close, date, "open"
+                )
+                if len(state.positions) >= config.max_open_positions:
+                    record_rejection(
+                        rejections,
+                        pending,
+                        "max_positions",
+                        0.0,
+                        state,
+                        current_exposure,
+                        date,
+                    )
+                    pending_entries.pop(pending.pair, None)
+                    continue
+                position_slot = position_key(pending.edge, pending.pair, pending.timeframe)
+                if position_slot in state.positions:
+                    record_rejection(
+                        rejections, pending, "already_open", 0.0, state, current_exposure, date
+                    )
+                    pending_entries.pop(pending.pair, None)
+                    continue
+                desired_stake, details, reason = desired_entry(
+                    pending, row, state, rows_by_pair, last_close, date, config
+                )
+                if reason:
+                    record_rejection(
+                        rejections, pending, reason, desired_stake, state, current_exposure, date
+                    )
+                    pending_entries.pop(pending.pair, None)
+                    continue
+                stake = desired_stake
+                if stake < config.min_stake:
+                    record_rejection(
+                        rejections,
+                        pending,
+                        "below_min_stake",
+                        stake,
+                        state,
+                        current_exposure,
+                        date,
+                    )
+                    pending_entries.pop(pending.pair, None)
+                    continue
+                entry_price = details["entry_price"]
+                entry_fee = stake * config.fee
+                quantity = stake / entry_price
+                stop_price = entry_price * (1.0 - details["stop_distance"])
+                take_profit_price = entry_price * (1.0 + details["take_profit_distance"])
+                post_entry_capital = state.cash + total_stake(state.positions) - entry_fee
+                post_entry_stake = total_stake(state.positions) + stake
+                post_entry_pair_stake = pair_stake(pending.pair, state.positions) + stake
+                entry_stake_exposure = (
+                    post_entry_stake / post_entry_capital if post_entry_capital > 0 else 0.0
+                )
+                entry_pair_stake_exposure = (
+                    post_entry_pair_stake / post_entry_capital if post_entry_capital > 0 else 0.0
+                )
+                unique_position_id = f"{position_slot}|{next_position_id:06d}"
+                next_position_id += 1
+                sequence = next_allocation_sequence
+                next_allocation_sequence += 1
+                state.cash -= stake + entry_fee
+                if state.cash < -0.000001:
+                    raise RuntimeError("cash became negative after entry")
+                state.fees_paid += entry_fee
+                state.positions[position_slot] = Position(
+                    position_id=unique_position_id,
+                    edge=pending.edge,
+                    edge_version=pending.edge_version,
+                    pair=pending.pair,
+                    timeframe=pending.timeframe,
+                    signal_date=pending.signal_date,
+                    entry_date=date,
+                    entry_index=int(row.bar_index),
+                    quantity=quantity,
+                    stake=stake,
+                    entry_price=entry_price,
+                    entry_fee=entry_fee,
+                    stop_price=stop_price,
+                    take_profit_price=take_profit_price,
+                    stop_distance=details["stop_distance"],
+                    take_profit_distance=details["take_profit_distance"],
+                    max_hold=pending.max_hold,
+                    entry_stake_exposure=entry_stake_exposure,
+                    entry_pair_stake_exposure=entry_pair_stake_exposure,
+                    allocation_sequence=sequence,
+                    pair_priority=pending.pair_priority,
+                    execution_profile=config.execution_profile,
+                    execution_model=config.execution_model,
+                    allocation_policy=config.allocation_policy,
+                    cost_model_version=config.cost_model_version,
+                )
+                entries_opened += 1
+                max_concurrent_positions = max(max_concurrent_positions, len(state.positions))
+                pending_entries.pop(pending.pair, None)
+            candidates = []
+
         if candidates:
             slots = config.max_open_positions - len(state.positions)
             if slots <= 0:
@@ -667,7 +931,7 @@ def simulate_account(  # noqa: C901
                     pending_entries.pop(pending.pair, None)
                 candidates = []
             elif len(candidates) > slots:
-                candidates = sorted(candidates, key=lambda item: pending_priority(item[0]))
+                candidates = sorted(candidates, key=lambda item: pending_sort_key(item[0], config))
                 rejected = candidates[slots:]
                 candidates = candidates[:slots]
                 for pending, desired_stake, _, _ in rejected:
@@ -729,6 +993,8 @@ def simulate_account(  # noqa: C901
                 position_slot = position_key(pending.edge, pending.pair, pending.timeframe)
                 unique_position_id = f"{position_slot}|{next_position_id:06d}"
                 next_position_id += 1
+                sequence = next_allocation_sequence
+                next_allocation_sequence += 1
                 state.cash -= stake + entry_fee
                 if state.cash < -0.000001:
                     raise RuntimeError("cash became negative after entry")
@@ -753,6 +1019,12 @@ def simulate_account(  # noqa: C901
                     max_hold=pending.max_hold,
                     entry_stake_exposure=entry_stake_exposure,
                     entry_pair_stake_exposure=entry_pair_stake_exposure,
+                    allocation_sequence=sequence,
+                    pair_priority=pending.pair_priority,
+                    execution_profile=config.execution_profile,
+                    execution_model=config.execution_model,
+                    allocation_policy=config.allocation_policy,
+                    cost_model_version=config.cost_model_version,
                 )
                 entries_opened += 1
                 max_concurrent_positions = max(max_concurrent_positions, len(state.positions))
@@ -821,6 +1093,11 @@ def simulate_account(  # noqa: C901
                     signal_index=int(getattr(signal, "signal_index", -1)),
                     risk=float(getattr(signal, "composite_vol_at_signal", np.nan)),
                     max_hold=int(signal.max_hold),
+                    pair_priority=priorities.get(pair, 999999),
+                    execution_profile=config.execution_profile,
+                    execution_model=config.execution_model,
+                    allocation_policy=config.allocation_policy,
+                    cost_model_version=config.cost_model_version,
                 )
                 current_exposure = market_value(
                     state.positions, rows_by_pair, last_close, date, "close"
@@ -869,6 +1146,11 @@ def simulate_account(  # noqa: C901
                     signal_index=int(getattr(signal, "signal_index", -1)),
                     risk=risk,
                     max_hold=int(signal.max_hold),
+                    pair_priority=priorities.get(pair, 999999),
+                    execution_profile=config.execution_profile,
+                    execution_model=config.execution_model,
+                    allocation_policy=config.allocation_policy,
+                    cost_model_version=config.cost_model_version,
                 )
 
         for pair, row in current_rows.items():
@@ -926,6 +1208,10 @@ def simulate_account(  # noqa: C901
                 "max_entry_stake_exposure": max_entry_stake_exposure,
                 "max_entry_pair_stake_exposure": max_entry_pair_stake_exposure,
                 "open_positions": len(state.positions),
+                "execution_profile": config.execution_profile,
+                "execution_model": config.execution_model,
+                "allocation_policy": config.allocation_policy,
+                "cost_model_version": config.cost_model_version,
             }
         )
 
@@ -958,12 +1244,16 @@ def simulate_account(  # noqa: C901
                     "max_entry_pair_stake_exposure": 0.0,
                     "open_positions": 0,
                     "drawdown": 0.0,
+                    "execution_profile": config.execution_profile,
+                    "execution_model": config.execution_model,
+                    "allocation_policy": config.allocation_policy,
+                    "cost_model_version": config.cost_model_version,
                 }
             ]
         )
 
-    trades_df = pd.DataFrame(trades)
-    rejections_df = pd.DataFrame(rejections)
+    trades_df = ensure_columns(pd.DataFrame(trades), TRADE_COLUMNS)
+    rejections_df = ensure_columns(pd.DataFrame(rejections), REJECTION_COLUMNS)
     if not rejections_df.empty:
         rejections_df["run_id"] = run_id
     closed = trades_df
@@ -1010,6 +1300,10 @@ def simulate_account(  # noqa: C901
         "signals_rejected": len(rejections_df),
         "open_positions_end": len(state.positions),
         "account_simulator_version": ACCOUNT_SIMULATOR_VERSION,
+        "execution_profile": config.execution_profile,
+        "execution_model": config.execution_model,
+        "allocation_policy": config.allocation_policy,
+        "cost_model_version": config.cost_model_version,
     }
     return SimulationResult(
         summary=summary,
@@ -1043,7 +1337,9 @@ def run_account_simulator(
     timeframes: list[str],
     config: AccountConfig,
     run_id: str,
+    profile: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    active_profile = validate_cli_profile(config, profile or config.execution_profile)
     signals_path = storage / "results" / "edge_signals.parquet"
     if not signals_path.exists():
         raise FileNotFoundError(f"Missing {signals_path}. Run edge_engine first.")
@@ -1075,19 +1371,32 @@ def run_account_simulator(
             all_summary.append(pd.DataFrame([result.summary]))
             all_rejections.append(result.rejections)
 
-    trades_df = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
+    trades_df = ensure_columns(
+        pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame(),
+        TRADE_COLUMNS,
+    )
     equity_df = pd.concat(all_equity, ignore_index=True) if all_equity else pd.DataFrame()
     summary_df = pd.concat(all_summary, ignore_index=True) if all_summary else pd.DataFrame()
-    rejections_df = (
-        pd.concat(all_rejections, ignore_index=True) if all_rejections else pd.DataFrame()
+    rejections_df = ensure_columns(
+        pd.concat(all_rejections, ignore_index=True) if all_rejections else pd.DataFrame(),
+        REJECTION_COLUMNS,
     )
 
-    out_dir = storage / "results"
+    out_dir = profile_results_dir(storage, active_profile)
     out_dir.mkdir(parents=True, exist_ok=True)
-    write_parquet_atomic(trades_df, out_dir / "account_trades.parquet")
-    write_parquet_atomic(equity_df, out_dir / "account_equity.parquet")
-    write_parquet_atomic(summary_df, out_dir / "account_summary.parquet")
-    write_parquet_atomic(rejections_df, out_dir / "account_rejections.parquet")
+    outputs = {
+        "account_trades.parquet": trades_df,
+        "account_equity.parquet": equity_df,
+        "account_summary.parquet": summary_df,
+        "account_rejections.parquet": rejections_df,
+    }
+    for name, frame in outputs.items():
+        write_parquet_atomic(frame, out_dir / name)
+    if active_profile == LEGACY_PROFILE:
+        legacy_dir = storage / "results"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        for name in outputs:
+            shutil.copy2(out_dir / name, legacy_dir / name)
     refresh_duckdb(storage)
     return trades_df, equity_df, summary_df, rejections_df
 
@@ -1101,10 +1410,20 @@ def main() -> None:
     parser.add_argument("--pairs", default="BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT,DOGE/USDT")
     parser.add_argument("--timeframes", default="1h,4h")
     parser.add_argument("--rules", default="research_lab/config/account_rules.json", type=Path)
+    parser.add_argument("--profile", default=None, choices=["research", "freqtrade"])
+    parser.add_argument(
+        "--pair-universe",
+        default="research_lab/config/pair_universe.json",
+        type=Path,
+    )
     parser.add_argument("--run-id", default=os.environ.get("RUN_ID"))
     args = parser.parse_args()
 
     config, _, _ = load_account_config(args.rules)
+    _, universe_pairs = load_pair_universe(args.pair_universe)
+    if universe_pairs:
+        config = with_pair_universe(config, universe_pairs)
+    profile = validate_cli_profile(config, args.profile or config.execution_profile)
     run_id = args.run_id or "manual"
     _, _, summary, _ = run_account_simulator(
         args.storage,
@@ -1113,6 +1432,7 @@ def main() -> None:
         parse_csv(args.timeframes),
         config,
         run_id,
+        profile,
     )
     if summary.empty:
         print("No account simulation results.")

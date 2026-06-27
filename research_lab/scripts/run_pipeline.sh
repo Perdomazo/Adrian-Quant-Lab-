@@ -19,6 +19,9 @@ RUN_PROMOTION="${RUN_PROMOTION:-0}"
 PROMOTION_RULES="${PROMOTION_RULES:-research_lab/config/promotion_rules.json}"
 DECISION_RULES="${DECISION_RULES:-research_lab/config/decision_rules.json}"
 ACCOUNT_RULES="${ACCOUNT_RULES:-research_lab/config/account_rules.json}"
+ACCOUNT_PROFILES="${ACCOUNT_PROFILES:-research,freqtrade}"
+ACCOUNT_RULES_RESEARCH="${ACCOUNT_RULES_RESEARCH:-research_lab/config/account_rules_research.json}"
+ACCOUNT_RULES_FREQTRADE="${ACCOUNT_RULES_FREQTRADE:-research_lab/config/account_rules_freqtrade.json}"
 PAIR_UNIVERSE="${PAIR_UNIVERSE:-research_lab/config/pair_universe.json}"
 ACCOUNT_DECISION_RULES="${ACCOUNT_DECISION_RULES:-research_lab/config/account_decision_rules.json}"
 TRAIN_MONTHS="${TRAIN_MONTHS:-18}"
@@ -188,54 +191,86 @@ python -m research_lab.edge_engine \
   --only-walk-forward
 stage_end walk_forward
 
+account_rules_for_profile() {
+  local profile="$1"
+  case "$profile" in
+    research) echo "$ACCOUNT_RULES_RESEARCH" ;;
+    freqtrade) echo "$ACCOUNT_RULES_FREQTRADE" ;;
+    legacy) echo "$ACCOUNT_RULES" ;;
+    *)
+      echo "Unsupported account profile=$profile" >&2
+      exit 2
+      ;;
+  esac
+}
+
+IFS=',' read -r -a ACCOUNT_PROFILE_LIST <<< "$ACCOUNT_PROFILES"
+for profile in "${ACCOUNT_PROFILE_LIST[@]}"; do
+  profile="$(echo "$profile" | xargs)"
+  [[ -z "$profile" ]] && continue
+  profile_rules="$(account_rules_for_profile "$profile")"
+
+  stage_start
+  python -m research_lab.account_simulator \
+    --profile "$profile" \
+    --storage "$STORAGE_DIR" \
+    --exchange kucoin \
+    --pairs "$PAIRS" \
+    --timeframes "$TIMEFRAMES" \
+    --rules "$profile_rules" \
+    --pair-universe "$PAIR_UNIVERSE" \
+    --run-id "$RUN_ID"
+  stage_end "account_simulator_${profile}"
+
+  stage_start
+  python -m research_lab.account_validation \
+    --profile "$profile" \
+    --storage "$STORAGE_DIR" \
+    --rules "$profile_rules" \
+    --run-id "$RUN_ID" \
+    --fail-on-error
+  stage_end "account_validation_${profile}"
+
+  stage_start
+  python -m research_lab.account_oos \
+    --profile "$profile" \
+    --storage "$STORAGE_DIR" \
+    --exchange kucoin \
+    --pairs "$PAIRS" \
+    --timeframes "$TIMEFRAMES" \
+    --account-rules "$profile_rules" \
+    --pair-universe "$PAIR_UNIVERSE" \
+    --train-months "$TRAIN_MONTHS" \
+    --test-months "$TEST_MONTHS" \
+    --step-months "$STEP_MONTHS" \
+    --run-id "$RUN_ID"
+  stage_end "account_oos_${profile}"
+
+  stage_start
+  python -m research_lab.account_oos_validation \
+    --profile "$profile" \
+    --storage "$STORAGE_DIR" \
+    --run-id "$RUN_ID" \
+    --fail-on-error
+  stage_end "account_oos_validation_${profile}"
+
+  stage_start
+  python -m research_lab.account_candidate \
+    --profile "$profile" \
+    --root "$ROOT_DIR" \
+    --storage "$STORAGE_DIR" \
+    --rules "$ACCOUNT_DECISION_RULES" \
+    --pair-universe "$PAIR_UNIVERSE" \
+    --run-id "$RUN_ID" \
+    --allow-running-run
+  stage_end "account_candidate_${profile}"
+done
+
 stage_start
-python -m research_lab.account_simulator \
+python -m research_lab.profile_comparison \
   --storage "$STORAGE_DIR" \
-  --exchange kucoin \
-  --pairs "$PAIRS" \
-  --timeframes "$TIMEFRAMES" \
-  --rules "$ACCOUNT_RULES" \
   --run-id "$RUN_ID"
-stage_end account_simulator
-
-stage_start
-python -m research_lab.account_validation \
-  --storage "$STORAGE_DIR" \
-  --rules "$ACCOUNT_RULES" \
-  --run-id "$RUN_ID" \
-  --fail-on-error
-stage_end account_validation
-
-stage_start
-python -m research_lab.account_oos \
-  --storage "$STORAGE_DIR" \
-  --exchange kucoin \
-  --pairs "$PAIRS" \
-  --timeframes "$TIMEFRAMES" \
-  --account-rules "$ACCOUNT_RULES" \
-  --pair-universe "$PAIR_UNIVERSE" \
-  --train-months "$TRAIN_MONTHS" \
-  --test-months "$TEST_MONTHS" \
-  --step-months "$STEP_MONTHS" \
-  --run-id "$RUN_ID"
-stage_end account_oos
-
-stage_start
-python -m research_lab.account_oos_validation \
-  --storage "$STORAGE_DIR" \
-  --run-id "$RUN_ID" \
-  --fail-on-error
-stage_end account_oos_validation
-
-stage_start
-python -m research_lab.account_candidate \
-  --root "$ROOT_DIR" \
-  --storage "$STORAGE_DIR" \
-  --rules "$ACCOUNT_DECISION_RULES" \
-  --pair-universe "$PAIR_UNIVERSE" \
-  --run-id "$RUN_ID" \
-  --allow-running-run
-stage_end account_candidate
+stage_end profile_comparison
 
 stage_start
 python -m research_lab.run_manager --root "$ROOT_DIR" --storage "$STORAGE_DIR" --run-id "$RUN_ID" snapshot

@@ -17,7 +17,10 @@ from research_lab.account_simulator import (
     normalize_signals,
     parse_csv,
     simulate_account,
+    validate_cli_profile,
+    with_pair_universe,
 )
+from research_lab.profile_paths import LEGACY_PROFILE, profile_results_dir
 from research_lab.validation_windows import TemporalFold, build_temporal_folds
 from research_lab.warehouse import refresh_duckdb, write_parquet_atomic
 
@@ -38,6 +41,10 @@ SUMMARY_COLUMNS = [
     "account_rules_version",
     "account_simulator_version",
     "account_oos_version",
+    "execution_profile",
+    "execution_model",
+    "allocation_policy",
+    "cost_model_version",
     "available_pairs",
     "missing_pairs",
     "available_pair_count",
@@ -96,6 +103,12 @@ TRADE_COLUMNS = [
     "fold",
     "test_start",
     "test_end",
+    "execution_profile",
+    "execution_model",
+    "allocation_policy",
+    "pair_priority",
+    "allocation_sequence",
+    "cost_model_version",
 ]
 
 EQUITY_COLUMNS = [
@@ -123,6 +136,10 @@ EQUITY_COLUMNS = [
     "fold",
     "test_start",
     "test_end",
+    "execution_profile",
+    "execution_model",
+    "allocation_policy",
+    "cost_model_version",
 ]
 
 REJECTION_COLUMNS = [
@@ -140,6 +157,12 @@ REJECTION_COLUMNS = [
     "fold",
     "test_start",
     "test_end",
+    "execution_profile",
+    "execution_model",
+    "allocation_policy",
+    "pair_priority",
+    "allocation_sequence",
+    "cost_model_version",
 ]
 
 AGGREGATE_COLUMNS = [
@@ -149,6 +172,10 @@ AGGREGATE_COLUMNS = [
     "timeframe",
     "pair_universe_version",
     "account_rules_version",
+    "execution_profile",
+    "execution_model",
+    "allocation_policy",
+    "cost_model_version",
     "folds",
     "positive_folds",
     "positive_fold_rate",
@@ -292,6 +319,10 @@ def oos_summary_row(
             "account_rules_version": account_rules_version,
             "account_simulator_version": ACCOUNT_SIMULATOR_VERSION,
             "account_oos_version": ACCOUNT_OOS_VERSION,
+            "execution_profile": summary.get("execution_profile"),
+            "execution_model": summary.get("execution_model"),
+            "allocation_policy": summary.get("allocation_policy"),
+            "cost_model_version": summary.get("cost_model_version"),
             "available_pairs": pair_coverage["available_pairs"],
             "missing_pairs": pair_coverage["missing_pairs"],
             "available_pair_count": pair_coverage["available_pair_count"],
@@ -315,6 +346,10 @@ def aggregate_oos(summary: pd.DataFrame) -> pd.DataFrame:
             "timeframe",
             "pair_universe_version",
             "account_rules_version",
+            "execution_profile",
+            "execution_model",
+            "allocation_policy",
+            "cost_model_version",
         ],
         as_index=False,
     ).agg(
@@ -399,7 +434,9 @@ def run_account_oos(
     train_months: int,
     test_months: int,
     step_months: int,
+    profile: str | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    active_profile = validate_cli_profile(config, profile or config.execution_profile)
     signals_path = storage / "results" / "edge_signals.parquet"
     if not signals_path.exists():
         raise FileNotFoundError(f"Missing {signals_path}. Run edge_engine first.")
@@ -453,13 +490,22 @@ def run_account_oos(
     )
     aggregate_df = ensure_columns(aggregate_oos(summary_df), AGGREGATE_COLUMNS)
 
-    out_dir = storage / "results"
+    out_dir = profile_results_dir(storage, active_profile)
     out_dir.mkdir(parents=True, exist_ok=True)
-    write_parquet_atomic(summary_df, out_dir / "account_oos_summary.parquet")
-    write_parquet_atomic(trades_df, out_dir / "account_oos_trades.parquet")
-    write_parquet_atomic(equity_df, out_dir / "account_oos_equity.parquet")
-    write_parquet_atomic(rejections_df, out_dir / "account_oos_rejections.parquet")
-    write_parquet_atomic(aggregate_df, out_dir / "account_oos_aggregate.parquet")
+    outputs = {
+        "account_oos_summary.parquet": summary_df,
+        "account_oos_trades.parquet": trades_df,
+        "account_oos_equity.parquet": equity_df,
+        "account_oos_rejections.parquet": rejections_df,
+        "account_oos_aggregate.parquet": aggregate_df,
+    }
+    for name, frame in outputs.items():
+        write_parquet_atomic(frame, out_dir / name)
+    if active_profile == LEGACY_PROFILE:
+        legacy_dir = storage / "results"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        for name, frame in outputs.items():
+            write_parquet_atomic(frame, legacy_dir / name)
     refresh_duckdb(storage)
     return summary_df, trades_df, equity_df, rejections_df, aggregate_df
 
@@ -484,11 +530,15 @@ def main() -> None:
     parser.add_argument("--train-months", type=int, default=18)
     parser.add_argument("--test-months", type=int, default=6)
     parser.add_argument("--step-months", type=int, default=6)
+    parser.add_argument("--profile", default=None, choices=["research", "freqtrade"])
     parser.add_argument("--run-id", default=os.environ.get("RUN_ID"))
     args = parser.parse_args()
 
     config, rules_version, _ = load_account_config(args.account_rules)
     universe_version, universe_pairs = load_pair_universe(args.pair_universe)
+    if universe_pairs:
+        config = with_pair_universe(config, universe_pairs)
+    profile = validate_cli_profile(config, args.profile or config.execution_profile)
     cli_pairs = parse_csv(args.pairs)
     pairs = cli_pairs or universe_pairs
     if universe_pairs:
@@ -506,6 +556,7 @@ def main() -> None:
         train_months=args.train_months,
         test_months=args.test_months,
         step_months=args.step_months,
+        profile=profile,
     )
 
     if aggregate.empty:

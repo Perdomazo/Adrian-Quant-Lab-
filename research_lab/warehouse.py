@@ -240,6 +240,16 @@ def refresh_duckdb(storage: Path) -> None:  # noqa: C901
     def sql_path(path: Path) -> str:
         return str(path).replace("'", "''")
 
+    def create_profile_view(view_name: str, file_name: str) -> None:
+        files = sorted((storage / "results" / "profiles").glob(f"*/{file_name}"))
+        if not files:
+            return
+        quoted = ", ".join(f"'{sql_path(path)}'" for path in files)
+        con.execute(
+            f"CREATE OR REPLACE VIEW {view_name} AS "
+            f"SELECT * FROM read_parquet([{quoted}], union_by_name=true)"
+        )
+
     try:
         con.execute(
             f"CREATE OR REPLACE VIEW ohlcv_manifest AS "
@@ -358,6 +368,33 @@ def refresh_duckdb(storage: Path) -> None:  # noqa: C901
             con.execute(
                 f"CREATE OR REPLACE VIEW account_candidate_history AS "
                 f"SELECT * FROM read_parquet('{sql_path(account_candidate_history)}')"
+            )
+        create_profile_view("account_summary_profiles", "account_summary.parquet")
+        create_profile_view("account_trades_profiles", "account_trades.parquet")
+        create_profile_view("account_equity_profiles", "account_equity.parquet")
+        create_profile_view("account_rejections_profiles", "account_rejections.parquet")
+        create_profile_view("account_oos_summary_profiles", "account_oos_summary.parquet")
+        create_profile_view("account_oos_trades_profiles", "account_oos_trades.parquet")
+        create_profile_view("account_oos_equity_profiles", "account_oos_equity.parquet")
+        create_profile_view("account_oos_rejections_profiles", "account_oos_rejections.parquet")
+        create_profile_view("account_oos_aggregate_profiles", "account_oos_aggregate.parquet")
+        create_profile_view(
+            "account_candidate_summary_profiles", "account_candidate_summary.parquet"
+        )
+        create_profile_view(
+            "account_candidate_history_profiles", "account_candidate_history.parquet"
+        )
+        profile_comparison = storage / "results" / "profile_comparison_summary.parquet"
+        if profile_comparison.exists():
+            con.execute(
+                f"CREATE OR REPLACE VIEW profile_comparison_summary AS "
+                f"SELECT * FROM read_parquet('{sql_path(profile_comparison)}')"
+            )
+        profile_overlap = storage / "results" / "profile_trade_overlap.parquet"
+        if profile_overlap.exists():
+            con.execute(
+                f"CREATE OR REPLACE VIEW profile_trade_overlap AS "
+                f"SELECT * FROM read_parquet('{sql_path(profile_overlap)}')"
             )
         deep_summary = storage / "results" / "deep_validation_summary.parquet"
         if deep_summary.exists():
